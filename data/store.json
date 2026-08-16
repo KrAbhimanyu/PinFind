@@ -1,0 +1,249 @@
+{
+  "users": [
+    {
+      "id": "usr-admin-1",
+      "email": "admin@pinfind.com",
+      "name": "Administrator",
+      "role": "ADMIN",
+      "passwordHash": "admin123"
+    },
+    {
+      "id": "usr-demo-user-1",
+      "email": "user@pinfind.com",
+      "name": "Demo Discovery User",
+      "role": "USER",
+      "passwordHash": "user123"
+    }
+  ],
+  "products": [
+    {
+      "id": "prod-1786885589709-vx1q1",
+      "slug": "grovemade-walnut-desk-shelf-t7q9",
+      "name": "Grovemade Walnut Desk Shelf",
+      "shortDescription": "Solid American Walnut dual-monitor riser with precision aluminum shelf.",
+      "detailedNotes": "Crafted from solid domestic walnut with cork feet to protect desktop surface.",
+      "imageUrl": "https://images.unsplash.com/photo-1593062096033-9a26b09da705?w=800&auto=format&fit=crop&q=80",
+      "aspectRatio": "tall",
+      "category": "Desk Setup",
+      "tags": [
+        "workspace",
+        "minimalist",
+        "wood",
+        "ergonomic"
+      ],
+      "affiliateLink": "https://grovemade.com/product/wood-desk-shelf/",
+      "retailer": "Grovemade",
+      "brand": "Grovemade",
+      "retailerDomain": "",
+      "price": 280,
+      "currency": "USD",
+      "isTrending": true,
+      "isStaffPick": true,
+      "isFeatured": false,
+      "clicksCount": 1,
+      "savesCount": 0,
+      "status": "PUBLISHED",
+      "createdAt": "2026-08-16T13:06:29.710Z",
+      "exportedToPinterest": true,
+      "pinterestPinId": "pin_msvtk25k_6rda",
+      "pinterestPinUrl": "https://www.pinterest.com/pin/pin_msvtk25k_6rda/",
+      "pinterestBoardId": "board_tech_02",
+      "pinterestExportedAt": "2026-08-16T13:06:51.752Z"
+    }
+  ],
+  "boards": [],
+  "clicks": [
+    {
+      "id": "clk-1786885604473-5f74i",
+      "productId": "prod-1786885589709-vx1q1",
+      "productName": "Grovemade Walnut Desk Shelf",
+      "retailer": "Grovemade",
+      "destinationUrl": "https://grovemade.com/product/wood-desk-shelf/",
+      "timestamp": "2026-08-16T13:06:44.473Z",
+      "referrerLocation": "card_quick_button",
+      "deviceType": "desktop"
+    }
+  ],
+  "sessions": {
+    "token-sess-1786885571346-euuba": {
+      "userId": "usr-admin-1",
+      "createdAt": 1786885571346
+    }
+  },
+  "categories": [
+    {
+      "id": "cat-home-decor",
+      "name": "Home Decor",
+      "slug": "home-decor",
+      "description": "Modern accents, lighting, cozy rugs, and interior styling essentials.",
+      "icon": "home",
+      "subcategories": [
+        "Living Room",
+        "Lighting",
+        "Wall Art",
+        "Textiles",
+        "Planters"
+      ],
+      "createdAt": "2026-08-16T13:05:39.431Z"
+    },
+    {
+      "id": "cat-fashion",
+      "name": "Fashion & Style",
+      "slug": "fashion",
+      "description": "Trending apparel, footwear, everyday minimalist accessories, and seasonal wear.",
+      "icon": "shirt",
+      "subcategories": [
+        "Outerwear",
+        "Footwear",
+        "Bags",
+        "Jewelry",
+        "Essentials"
+      ],
+      "createdAt": "2026-08-16T13:05:39.431Z"
+    },
+    {
+      "id": "cat-electronics",
+      "name": "Electronics & Tech",
+      "slug": "electronics",
+      "description": "Premium desk gadgets, audio equipment, ergonomic accessories, and smart devices.",
+      "icon": "laptop",
+      "subcategories": [
+        "Desk Setup",
+        "Audio",
+        "Smart Home",
+        "Accessories",
+        "Chargers"
+      ],
+      "createdAt": "2026-08-16T13:05:39.432Z"
+    },
+    {
+      "id": "cat-beauty",
+      "name": "Beauty & Skincare",
+      "slug": "beauty",
+      "description": "Clean skincare, botanical serums, hair care, and daily wellness rituals.",
+      "icon": "sparkles",
+      "subcategories": [
+        "Skincare",
+        "Hair Care",
+        "Fragrance",
+        "Body Care",
+        "Tools"
+      ],
+      "createdAt": "2026-08-16T13:05:39.432Z"
+    },
+    {
+      "id": "cat-kitchen",
+      "name": "Kitchen & Dining",
+      "slug": "kitchen",
+      "description": "Specialty coffee makers, artisan cookware, glassware, and tableware.",
+      "icon": "coffee",
+      "subcategories": [
+        "Coffee & Tea",
+        "Cookware",
+        "Glassware",
+        "Tabletop",
+        "Kitchen Tools"
+      ],
+      "createdAt": "2026-08-16T13:05:39.432Z"
+    },
+    {
+      "id": "cat-lifestyle",
+      "name": "Lifestyle & Wellness",
+      "slug": "lifestyle",
+      "description": "Mindfulness tools, fitness gear, journals, stationery, and travel essentials.",
+      "icon": "heart",
+      "subcategories": [
+        "Fitness",
+        "Journals",
+        "Stationery",
+        "Travel Gear",
+        "Aromatherapy"
+      ],
+      "createdAt": "2026-08-16T13:05:39.432Z"
+    }
+  ],
+  "auditLogs": [
+    {
+      "id": "log-1786885611752-uayx1",
+      "adminId": "usr-admin-1",
+      "adminName": "Administrator",
+      "action": "Exported Product to Pinterest",
+      "targetEntity": "Product: Grovemade Walnut Desk Shelf",
+      "targetId": "prod-1786885589709-vx1q1",
+      "details": "Board ID: board_tech_02, Pin: pin_msvtk25k_6rda",
+      "timestamp": "2026-08-16T13:06:51.752Z"
+    },
+    {
+      "id": "log-1786885607709-bw6kz",
+      "adminId": "usr-admin-1",
+      "adminName": "Administrator",
+      "action": "Pinterest Account Connected",
+      "targetEntity": "Pinterest Integration",
+      "details": "Account: @pinfind_curator",
+      "timestamp": "2026-08-16T13:06:47.710Z"
+    },
+    {
+      "id": "log-1786885589710-14a6i",
+      "adminId": "usr-admin-1",
+      "adminName": "Administrator",
+      "action": "Product Created",
+      "targetEntity": "Product: Grovemade Walnut Desk Shelf",
+      "targetId": "prod-1786885589709-vx1q1",
+      "details": "Status: PUBLISHED, Category: Desk Setup",
+      "timestamp": "2026-08-16T13:06:29.710Z"
+    }
+  ],
+  "settings": {
+    "platformName": "PinFind Discovery",
+    "tagline": "Visual Product Discovery & Curated Collections",
+    "storeDisclaimer": "We curate products based on design excellence and quality. All product links take you directly to verified official retailer stores.",
+    "defaultCurrency": "USD",
+    "contactEmail": "hello@pinfind.store"
+  },
+  "pinterest": {
+    "isConnected": true,
+    "accessToken": "demo_token_1786885607709",
+    "profile": {
+      "id": "pin_curator_demo",
+      "username": "pinfind_curator",
+      "account_type": "BUSINESS_CREATOR",
+      "profile_image": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
+      "website_url": "https://pinfind.store",
+      "connectedAt": "2026-08-16T13:06:47.709Z"
+    },
+    "syncedBoards": [
+      {
+        "id": "board_home_01",
+        "name": "Aesthetic Home & Living",
+        "description": "Curated interior styling, lighting, and ceramics",
+        "pinCount": 42,
+        "privacy": "PUBLIC"
+      },
+      {
+        "id": "board_tech_02",
+        "name": "Minimalist Desk Setup",
+        "description": "Ergonomic gear and aesthetic workspace accessories",
+        "pinCount": 29,
+        "privacy": "PUBLIC"
+      },
+      {
+        "id": "board_coffee_03",
+        "name": "Coffee & Kitchen Rituals",
+        "description": "Artisan drippers, espresso machines, and glassware",
+        "pinCount": 19,
+        "privacy": "PUBLIC"
+      },
+      {
+        "id": "board_style_04",
+        "name": "Everyday Essentials & Style",
+        "description": "Capsule wardrobe, bags, and modern wellness",
+        "pinCount": 35,
+        "privacy": "PUBLIC"
+      }
+    ],
+    "defaultBoardId": "board_home_01",
+    "autoSyncOnPublish": false,
+    "lastSyncedAt": "2026-08-16T13:06:51.752Z",
+    "totalPinsExported": 1
+  }
+}
