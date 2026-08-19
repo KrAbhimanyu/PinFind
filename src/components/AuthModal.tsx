@@ -79,7 +79,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   {mode === 'admin-login' ? 'Admin Portal Authentication' : mode === 'register' ? 'Create PinFind Account' : 'Account Sign In'}
                 </h3>
                 <p className="text-xs text-white/80">
-                  {mode === 'admin-login' ? 'Restricted console for verified administrators' : 'Save pins, create boards, and discover trends'}
+                  {mode === 'admin-login' ? 'Authorized administrator access' : 'Save pins, create boards, and discover trends'}
                 </p>
               </div>
             </div>
@@ -111,7 +111,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   required
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. Elena Rostova"
+                  placeholder="Your full name"
+                  autoComplete="name"
                   className="w-full pl-10 pr-4 py-2.5 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-900 focus:bg-white focus:border-slate-400 focus:outline-none"
                 />
               </div>
@@ -127,7 +128,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="name@example.com"
+                placeholder="Email address"
+                autoComplete="email"
                 className="w-full pl-10 pr-4 py-2.5 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-900 focus:bg-white focus:border-slate-400 focus:outline-none"
               />
             </div>
@@ -142,7 +144,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
+                placeholder="Password"
+                autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
                 className="w-full pl-10 pr-4 py-2.5 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-900 focus:bg-white focus:border-slate-400 focus:outline-none"
               />
             </div>
@@ -172,7 +175,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
           {mode === 'admin-login' ? (
             <button
-              onClick={() => { setMode('login'); setError(null); }}
+              onClick={() => { setMode('login'); setError(null); setEmail(''); setPassword(''); }}
               className="text-slate-600 hover:text-slate-900 font-semibold cursor-pointer"
             >
               ← Back to User Login
@@ -181,7 +184,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             <div className="w-full text-center">
               Already have an account?{' '}
               <button
-                onClick={() => { setMode('login'); setError(null); }}
+                onClick={() => { setMode('login'); setError(null); setEmail(''); setPassword(''); }}
                 className="text-rose-600 font-bold hover:underline cursor-pointer"
               >
                 Sign In
@@ -192,14 +195,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <div>
                 Don't have an account?{' '}
                 <button
-                  onClick={() => { setMode('register'); setError(null); }}
+                  onClick={() => { setMode('register'); setError(null); setEmail(''); setPassword(''); }}
                   className="text-rose-600 font-bold hover:underline cursor-pointer"
                 >
                   Sign Up
                 </button>
               </div>
               <button
-                onClick={() => { setMode('admin-login'); setError(null); }}
+                onClick={() => { setMode('admin-login'); setError(null); setEmail(''); setPassword(''); }}
                 className="text-slate-500 hover:text-slate-800 font-semibold flex items-center gap-1 cursor-pointer"
               >
                 <Shield className="w-3 h-3" /> Admin Login
