@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Product, PinterestBoardItem, PinterestSyncState } from '../types';
 import { api } from '../services/api';
+import { formatPrice } from '../utils/formatters';
 import { 
   Share2, ExternalLink, RefreshCw, Plus, FolderPlus, 
   Sparkles, Check, Copy, ArrowUpRight, ShieldCheck, 
@@ -719,7 +720,7 @@ export const PinterestSyncView: React.FC<PinterestSyncViewProps> = ({
                         <div className="min-w-0">
                           <div className="font-bold text-slate-900 truncate max-w-[220px]">{p.name}</div>
                           <div className="text-[10px] text-slate-400 truncate max-w-[200px]">
-                            {p.currency || '$'}{p.price} • {p.retailer}
+                            {formatPrice(p.price, p.currency)} • {p.retailer}
                           </div>
                         </div>
                       </div>

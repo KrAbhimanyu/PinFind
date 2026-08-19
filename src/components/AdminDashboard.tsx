@@ -17,6 +17,13 @@ import {
 import { searchIndex } from '../services/searchIndex';
 import { PinterestSyncView } from './PinterestSyncView';
 import { PinterestSyncModal } from './PinterestSyncModal';
+import { LinkHealthChecker } from './admin/LinkHealthChecker';
+import { AffiliateEarningsEstimator } from './admin/AffiliateEarningsEstimator';
+import { UtmAutoTaggerSettings } from './admin/UtmAutoTaggerSettings';
+import { AuditLogSection } from './admin/AuditLogSection';
+import { TrafficStats } from './admin/TrafficStats';
+import { PriceIntelligence } from './admin/PriceIntelligence';
+import { formatPrice } from '../utils/formatters';
 
 interface AdminDashboardProps {
   products: Product[];
@@ -118,6 +125,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [status, setStatus] = useState<ProductStatus>('PUBLISHED');
   const [formError, setFormError] = useState<string | null>(null);
   const [imageUploadProgress, setImageUploadProgress] = useState(false);
+  const [isGeneratingAiDesc, setIsGeneratingAiDesc] = useState(false);
+  const [aiTone, setAiTone] = useState<'editorial' | 'minimalist' | 'persuasive' | 'technical'>('editorial');
 
   // Load Categories, Users, Audit Logs, Settings on mount
   const loadAuxData = async () => {
@@ -228,6 +237,47 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     } catch {
       setFormError('Failed to process image file.');
       setImageUploadProgress(false);
+    }
+  };
+
+  // AI Description Generator (Gemini Vision + Text Copywriter)
+  const handleGenerateAiDescription = async () => {
+    if (!name.trim() && !imageUrl.trim()) {
+      setFormError('Please provide either a product title or an image URL to generate an AI description.');
+      return;
+    }
+    setIsGeneratingAiDesc(true);
+    setFormError(null);
+    try {
+      const res = await api.generateAiDescription({
+        title: name.trim(),
+        imageUrl: imageUrl.trim(),
+        category,
+        brand: brand.trim(),
+        retailer: retailer.trim(),
+        keywords: tagsInput.trim(),
+        tone: aiTone,
+      });
+
+      if (res.shortDescription) {
+        setShortDescription(res.shortDescription);
+      }
+      if (res.detailedDescription) {
+        let fullDesc = res.detailedDescription;
+        if (res.keyHighlights && res.keyHighlights.length > 0) {
+          fullDesc += '\n\nKey Highlights:\n' + res.keyHighlights.map(h => `• ${h}`).join('\n');
+        }
+        setDetailedNotes(fullDesc);
+      }
+      if ((!tagsInput || tagsInput.trim() === '') && res.seoKeywords && res.seoKeywords.length > 0) {
+        setTagsInput(res.seoKeywords.join(', '));
+      }
+
+      onShowToast('✨ Generated professional SEO product description!');
+    } catch (err: any) {
+      setFormError(err.message || 'Failed to generate AI description');
+    } finally {
+      setIsGeneratingAiDesc(false);
     }
   };
 
@@ -407,9 +457,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         email: newUserEmail.trim(),
         name: newUserName.trim() || newUserEmail.split('@')[0],
         password: newUserPassword,
-        role: newUserRole,
+        role: 'USER',
       });
-      onShowToast(`Created ${newUserRole} account for ${newUserEmail}!`);
+      onShowToast(`Created user account for ${newUserEmail}!`);
       setNewUserEmail('');
       setNewUserName('');
       setNewUserPassword('');
@@ -589,9 +639,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   // Nav Items definition matching requirement:
-  // Dashboard, Products, Add Product, Categories, Pinterest Sync, Store Links, Analytics, Users, Settings, Audit Log
+  // Dashboard, Traffic, Products, Add Product, Categories, Pinterest Sync, Store Links, Analytics, Users, Settings, Audit Log
   const navItems: { id: AdminSubTab; label: string; icon: any; count?: number }[] = [
     { id: 'dashboard', label: 'Dashboard', icon: BarChart3 },
+    { id: 'price-intelligence', label: 'Price Intelligence', icon: Sparkles },
+    { id: 'traffic', label: 'Traffic & Visitors', icon: Globe },
     { id: 'products', label: 'Products', icon: ShoppingBag, count: products.length },
     { id: 'new', label: editingProduct ? 'Edit Product' : '+ Add Product', icon: Plus },
     { id: 'categories', label: 'Categories', icon: Layers, count: categories.length },
@@ -599,7 +651,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     { id: 'links', label: 'Store Links', icon: Link2 },
     { id: 'analytics', label: 'Analytics', icon: TrendingUp },
     { id: 'users', label: 'Users', icon: Users, count: adminUsers.length },
-    { id: 'audit', label: 'Audit Log', icon: Activity },
+    { id: 'audit', label: 'Audit Log', icon: Activity, count: auditLogs.length },
     { id: 'settings', label: 'Settings', icon: Settings },
   ];
 
@@ -689,7 +741,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       {activeSubTab === 'dashboard' && (
         <div className="space-y-6">
           {/* Quick Metrics */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
             <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
               <div className="flex items-center justify-between text-slate-500 mb-2">
                 <span className="text-xs font-bold uppercase tracking-wider">Total Catalog</span>
@@ -703,16 +755,33 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </div>
             </div>
 
+            <div 
+              onClick={() => setActiveSubTab('traffic')}
+              className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs hover:border-indigo-300 transition-all cursor-pointer group"
+            >
+              <div className="flex items-center justify-between text-slate-500 mb-2">
+                <span className="text-xs font-bold uppercase tracking-wider group-hover:text-indigo-600 transition-colors">Visitor Traffic</span>
+                <Globe className="w-4 h-4 text-indigo-600" />
+              </div>
+              <div className="text-2xl font-black text-indigo-600 flex items-center gap-1.5">
+                <span>View Stats</span>
+                <ArrowUpRight className="w-4 h-4 text-indigo-400 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
+              </div>
+              <div className="text-[11px] text-slate-400 mt-1">
+                Daily visits & unique page views
+              </div>
+            </div>
+
             <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
               <div className="flex items-center justify-between text-slate-500 mb-2">
-                <span className="text-xs font-bold uppercase tracking-wider">Total Outbound Clicks</span>
+                <span className="text-xs font-bold uppercase tracking-wider">Outbound Clicks</span>
                 <ArrowUpRight className="w-4 h-4 text-emerald-500" />
               </div>
               <div className="text-2xl font-black text-slate-900">{analytics?.totalClicks || 0}</div>
               <div className="text-[11px] text-slate-400 mt-1">
                 {analytics && analytics.totalClicks > 0
                   ? `Across ${analytics.uniqueProductsClicked} unique products`
-                  : 'Real outbound affiliate click tracking'}
+                  : 'Outbound affiliate click tracking'}
               </div>
             </div>
 
@@ -723,7 +792,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </div>
               <div className="text-2xl font-black text-slate-900">{categories.length}</div>
               <div className="text-[11px] text-slate-400 mt-1">
-                Unlimited dynamic categories configured
+                Dynamic categories configured
               </div>
             </div>
 
@@ -788,7 +857,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           <div className="flex items-center gap-2 text-[10px] text-slate-400">
                             <span>{p.category}</span>
                             <span>•</span>
-                            <span>{p.price ? `$${p.price}` : 'Price unlisted'}</span>
+                            <span>{p.price !== undefined ? formatPrice(p.price, p.currency) : 'Price unlisted'}</span>
                           </div>
                         </div>
                       </div>
@@ -844,6 +913,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* SUB-TAB: PRICE & CARD DISCOUNT INTELLIGENCE */}
+      {activeSubTab === 'price-intelligence' && (
+        <PriceIntelligence
+          products={products}
+          categories={categories}
+          onProductCreated={onAddProduct}
+          onProductUpdated={onUpdateProduct}
+          onShowToast={onShowToast}
+        />
       )}
 
       {/* SUB-TAB 2: PRODUCTS CATALOG (SEARCH, FILTER, PAGINATION, BULK) */}
@@ -1080,10 +1160,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
                         {/* Price */}
                         <td className="p-3.5 whitespace-nowrap font-bold text-slate-900">
-                          {p.price !== undefined ? `$${p.price.toFixed(2)}` : '—'}
+                          {p.price !== undefined ? formatPrice(p.price, p.currency) : '—'}
                           {p.originalPrice && (
                             <span className="block text-[10px] text-slate-400 line-through">
-                              ${p.originalPrice.toFixed(2)}
+                              {formatPrice(p.originalPrice, p.currency)}
                             </span>
                           )}
                         </td>
@@ -1161,6 +1241,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                 Unpublish
                               </button>
                             )}
+
+                            {/* Refresh Offers */}
+                            <button
+                              onClick={async () => {
+                                try {
+                                  onShowToast(`Refreshing live pricing & card offers for "${p.name}"...`);
+                                  const res = await api.refreshProductOffers(p.id);
+                                  await onUpdateProduct(p.id, res.product);
+                                  onShowToast(`Refreshed "${p.name}": ${res.offersCount} bank offers active.`);
+                                } catch (err: any) {
+                                  onShowToast(`Refresh failed: ${err.message}`);
+                                }
+                              }}
+                              className="p-1.5 rounded-lg text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 cursor-pointer"
+                              title="Refresh Live Offers & Price"
+                            >
+                              <RefreshCw className="w-3.5 h-3.5" />
+                            </button>
 
                             {/* Duplicate */}
                             <button
@@ -1287,6 +1385,103 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           )}
 
           <div className="space-y-5">
+            {/* AI Auto-Enrichment Tool for Affiliates */}
+            <div className="p-4 bg-gradient-to-br from-indigo-50/80 via-purple-50/50 to-pink-50/30 border border-indigo-100 rounded-2xl space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 bg-indigo-600 text-white rounded-lg shadow-xs">
+                    <Sparkles className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-black uppercase tracking-wider text-indigo-950">
+                      AI Smart Affiliate Link Auto-Enrich
+                    </h3>
+                    <p className="text-[11px] text-indigo-700/80">
+                      Paste any Amazon, Etsy, or merchant URL to auto-extract title, price, description, tags & retailer
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  placeholder="Paste merchant product URL (e.g. https://amazon.com/dp/... or https://etsy.com/...)"
+                  id="ai-enrich-url-input"
+                  className="flex-1 px-3.5 py-2 text-xs rounded-xl bg-white border border-indigo-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
+                  onKeyDown={async (e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      const target = e.currentTarget as HTMLInputElement;
+                      const val = target.value.trim();
+                      if (!val) return;
+                      setIsSubmitting(true);
+                      setFormError(null);
+                      try {
+                        const enriched = await api.enrichProductLink(val);
+                        if (enriched.name) setName(enriched.name);
+                        if (enriched.shortDescription) setShortDescription(enriched.shortDescription);
+                        if (enriched.detailedNotes) setDetailedNotes(enriched.detailedNotes);
+                        if (enriched.category) setCategory(enriched.category);
+                        if (enriched.subcategory) setSubcategory(enriched.subcategory);
+                        if (enriched.retailer) setRetailer(enriched.retailer);
+                        if (enriched.brand) setBrand(enriched.brand);
+                        if (enriched.price !== undefined) setPrice(String(enriched.price));
+                        if (enriched.originalPrice !== undefined) setOriginalPrice(String(enriched.originalPrice));
+                        if (enriched.imageUrl) setImageUrl(enriched.imageUrl);
+                        if (enriched.tags && enriched.tags.length > 0) setTagsInput(enriched.tags.join(', '));
+                        setAffiliateLink(val);
+                        onShowToast('AI auto-filled product metadata successfully!');
+                      } catch (err: any) {
+                        setFormError(err.message || 'Failed to auto-enrich from URL');
+                      } finally {
+                        setIsSubmitting(false);
+                      }
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  id="ai-enrich-btn"
+                  disabled={isSubmitting}
+                  onClick={async () => {
+                    const inputEl = document.getElementById('ai-enrich-url-input') as HTMLInputElement;
+                    const val = inputEl ? inputEl.value.trim() : affiliateLink.trim();
+                    if (!val) {
+                      setFormError('Please enter a merchant URL in the AI box to auto-enrich.');
+                      return;
+                    }
+                    setIsSubmitting(true);
+                    setFormError(null);
+                    try {
+                      const enriched = await api.enrichProductLink(val);
+                      if (enriched.name) setName(enriched.name);
+                      if (enriched.shortDescription) setShortDescription(enriched.shortDescription);
+                      if (enriched.detailedNotes) setDetailedNotes(enriched.detailedNotes);
+                      if (enriched.category) setCategory(enriched.category);
+                      if (enriched.subcategory) setSubcategory(enriched.subcategory);
+                      if (enriched.retailer) setRetailer(enriched.retailer);
+                      if (enriched.brand) setBrand(enriched.brand);
+                      if (enriched.price !== undefined) setPrice(String(enriched.price));
+                      if (enriched.originalPrice !== undefined) setOriginalPrice(String(enriched.originalPrice));
+                      if (enriched.imageUrl) setImageUrl(enriched.imageUrl);
+                      if (enriched.tags && enriched.tags.length > 0) setTagsInput(enriched.tags.join(', '));
+                      setAffiliateLink(val);
+                      onShowToast('AI auto-filled product metadata successfully!');
+                    } catch (err: any) {
+                      setFormError(err.message || 'Failed to auto-enrich from URL');
+                    } finally {
+                      setIsSubmitting(false);
+                    }
+                  }}
+                  className="px-4 py-2 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white flex items-center gap-1.5 shadow-xs transition-all cursor-pointer whitespace-nowrap disabled:opacity-50"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Auto-Fill with AI</span>
+                </button>
+              </div>
+            </div>
+
             {/* 1. Image Upload & Preview Section */}
             <div className="space-y-2">
               <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
@@ -1356,6 +1551,57 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </div>
             </div>
 
+            {/* AI Copywriting & SEO Generator Bar */}
+            <div className="p-4 bg-gradient-to-r from-purple-50 via-indigo-50/70 to-pink-50/50 border border-purple-200/90 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-gradient-to-tr from-purple-600 to-indigo-600 text-white rounded-xl shadow-xs flex-shrink-0">
+                  <Sparkles className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-black uppercase tracking-wider text-purple-950 flex items-center gap-1.5">
+                    Gemini AI Description & SEO Writer
+                  </h4>
+                  <p className="text-[11px] text-purple-800/80">
+                    Analyze product image & title to generate professional, high-converting SEO descriptions
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                <select
+                  value={aiTone}
+                  onChange={(e: any) => setAiTone(e.target.value)}
+                  className="px-3 py-2 text-xs rounded-xl bg-white border border-purple-200 text-purple-900 font-bold focus:outline-none focus:ring-2 focus:ring-purple-400 cursor-pointer shadow-2xs"
+                  title="Select AI Writing Style"
+                >
+                  <option value="editorial">Editorial & Design Tone</option>
+                  <option value="minimalist">Minimalist / Clean</option>
+                  <option value="persuasive">Persuasive / High Conversion</option>
+                  <option value="technical">Technical Specs & Features</option>
+                </select>
+
+                <button
+                  type="button"
+                  id="generate-ai-description-btn"
+                  disabled={isGeneratingAiDesc || isSubmitting}
+                  onClick={handleGenerateAiDescription}
+                  className="px-4 py-2 rounded-xl text-xs font-black bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 hover:from-purple-700 hover:to-indigo-800 text-white flex items-center justify-center gap-1.5 shadow-sm transition-all cursor-pointer whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isGeneratingAiDesc ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Writing Copy with AI...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Generate AI Description</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
             {/* 2. Product Name & Short Description */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
@@ -1372,9 +1618,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                  Optional Short Description / Tagline
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                    Optional Short Description / Tagline
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleGenerateAiDescription}
+                    disabled={isGeneratingAiDesc}
+                    className="text-[10px] font-black text-purple-700 hover:text-purple-900 flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-50"
+                    title="Auto-draft tagline with Gemini AI"
+                  >
+                    <Sparkles className="w-3 h-3 text-purple-600" />
+                    <span>AI Draft</span>
+                  </button>
+                </div>
                 <input
                   type="text"
                   placeholder="e.g. Artisan pour-over dripper with matte finish"
@@ -1557,15 +1815,27 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
             {/* 7. Detailed Description */}
             <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                Detailed Product Description & Curator Notes
-              </label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                  Detailed Product Description & Curator Notes
+                </label>
+                <button
+                  type="button"
+                  onClick={handleGenerateAiDescription}
+                  disabled={isGeneratingAiDesc}
+                  className="text-[11px] font-black text-purple-700 hover:text-purple-900 flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                  title="Generate full SEO product description using Gemini AI"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-purple-600" />
+                  <span>{isGeneratingAiDesc ? 'Generating...' : '✨ Generate with Gemini AI'}</span>
+                </button>
+              </div>
               <textarea
-                rows={3}
-                placeholder="Share material details, why this product was curated, dimensions, and specifications..."
+                rows={4}
+                placeholder="Share material details, why this product was curated, dimensions, specifications, and SEO styling notes..."
                 value={detailedNotes}
                 onChange={(e) => setDetailedNotes(e.target.value)}
-                className="w-full px-3.5 py-2.5 text-xs rounded-xl bg-slate-50 border border-slate-200 focus:outline-none"
+                className="w-full px-3.5 py-2.5 text-xs rounded-xl bg-slate-50 border border-slate-200 focus:outline-none focus:ring-2 focus:ring-purple-500 leading-relaxed font-sans"
               />
             </div>
 
@@ -1764,75 +2034,92 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       {/* SUB-TAB 5: STORE DESTINATION LINKS MANAGEMENT */}
       {(activeSubTab === 'links' || activeSubTab === 'affiliates') && (
-        <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-sm space-y-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-base font-extrabold text-slate-900">Direct Store & Merchant Links</h2>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Centralized registry of verified direct merchant destinations configured across your catalog.
-              </p>
-            </div>
-            <span className="px-3 py-1 rounded-full text-xs font-bold bg-indigo-50 text-indigo-700">
-              {products.length} Destination Links
-            </span>
-          </div>
+        <div className="space-y-6">
+          {/* Smart Outbound UTM & Sub-ID Auto-Tagger */}
+          <UtmAutoTaggerSettings onShowToast={onShowToast} />
 
-          <div className="overflow-x-auto border border-slate-200 rounded-2xl">
-            <table className="w-full text-left text-xs text-slate-700">
-              <thead className="bg-slate-50 border-b border-slate-200 text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
-                <tr>
-                  <th className="p-3.5">Product</th>
-                  <th className="p-3.5">Retailer / Brand</th>
-                  <th className="p-3.5">Outbound Destination</th>
-                  <th className="p-3.5">Clicks</th>
-                  <th className="p-3.5 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {products.map((p) => (
-                  <tr key={p.id} className="hover:bg-slate-50/80">
-                    <td className="p-3.5 font-bold text-slate-900 truncate max-w-[200px]">
-                      {p.name}
-                    </td>
-                    <td className="p-3.5 text-slate-600 font-medium">
-                      {p.retailer || 'Direct'}
-                    </td>
-                    <td className="p-3.5 font-mono text-[11px] text-slate-500 truncate max-w-[320px]">
-                      {p.affiliateLink}
-                    </td>
-                    <td className="p-3.5 font-bold text-indigo-600">
-                      {p.clicksCount || 0}
-                    </td>
-                    <td className="p-3.5 text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <a
-                          href={p.affiliateLink}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="px-2.5 py-1 rounded-lg text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 flex items-center gap-1"
-                        >
-                          <span>Test</span>
-                          <ExternalLink className="w-3 h-3" />
-                        </a>
-                        <button
-                          onClick={() => handleStartEdit(p)}
-                          className="px-2.5 py-1 rounded-lg text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200"
-                        >
-                          Edit Link
-                        </button>
-                      </div>
-                    </td>
+          {/* Real-time Link Health & 404 Scanner */}
+          <LinkHealthChecker onShowToast={onShowToast} />
+
+          {/* Direct Store & Merchant Links Table */}
+          <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-sm space-y-5">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-base font-extrabold text-slate-900">Direct Store & Merchant Links</h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Centralized registry of verified direct merchant destinations configured across your catalog.
+                </p>
+              </div>
+              <span className="px-3 py-1 rounded-full text-xs font-bold bg-indigo-50 text-indigo-700">
+                {products.length} Destination Links
+              </span>
+            </div>
+
+            <div className="overflow-x-auto border border-slate-200 rounded-2xl">
+              <table className="w-full text-left text-xs text-slate-700">
+                <thead className="bg-slate-50 border-b border-slate-200 text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
+                  <tr>
+                    <th className="p-3.5">Product</th>
+                    <th className="p-3.5">Retailer / Brand</th>
+                    <th className="p-3.5">Outbound Destination</th>
+                    <th className="p-3.5">Clicks</th>
+                    <th className="p-3.5 text-right">Actions</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {products.map((p) => (
+                    <tr key={p.id} className="hover:bg-slate-50/80">
+                      <td className="p-3.5 font-bold text-slate-900 truncate max-w-[200px]">
+                        {p.name}
+                      </td>
+                      <td className="p-3.5 text-slate-600 font-medium">
+                        {p.retailer || 'Direct'}
+                      </td>
+                      <td className="p-3.5 font-mono text-[11px] text-slate-500 truncate max-w-[320px]">
+                        {p.affiliateLink}
+                      </td>
+                      <td className="p-3.5 font-bold text-indigo-600">
+                        {p.clicksCount || 0}
+                      </td>
+                      <td className="p-3.5 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <a
+                            href={p.affiliateLink}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="px-2.5 py-1 rounded-lg text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 flex items-center gap-1"
+                          >
+                            <span>Test</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                          <button
+                            onClick={() => handleStartEdit(p)}
+                            className="px-2.5 py-1 rounded-lg text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200"
+                          >
+                            Edit Link
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
+      )}
+
+      {/* SUB-TAB: TRAFFIC & VISITOR STATS (ADMIN ONLY) */}
+      {activeSubTab === 'traffic' && (
+        <TrafficStats onShowToast={onShowToast} />
       )}
 
       {/* SUB-TAB 6: ANALYTICS (ADMIN ONLY) */}
       {activeSubTab === 'analytics' && (
         <div className="space-y-6">
+          {/* Real-time Revenue & Commission Estimator Widget in INR */}
+          <AffiliateEarningsEstimator products={products} clicks={[]} />
+
           <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-sm">
             <div className="flex items-center justify-between mb-4">
               <div>
@@ -1953,23 +2240,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   />
                 </div>
 
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Assigned Role *</label>
-                  <select
-                    value={newUserRole}
-                    onChange={(e: any) => setNewUserRole(e.target.value)}
-                    className="w-full px-3.5 py-2 text-xs rounded-xl bg-slate-50 border border-slate-200 font-bold focus:outline-none"
-                  >
-                    <option value="USER">USER (Product Discovery & Visiting Only)</option>
-                    <option value="ADMIN">ADMIN (Full Catalog & Platform Management)</option>
-                  </select>
+                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-[11px] text-slate-500">
+                  <span className="font-bold text-slate-800 block mb-0.5">Role: USER</span>
+                  <span>New accounts are created as standard users. Only one primary Administrator account is permitted.</span>
                 </div>
 
                 <button
                   type="submit"
                   className="w-full py-2.5 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer transition-all"
                 >
-                  + Create Account
+                  + Create User Account
                 </button>
               </form>
             </div>
@@ -1998,19 +2278,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     </div>
 
                     <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => handleToggleUserRole(u)}
-                        className="px-2.5 py-1 rounded-lg text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer"
-                      >
-                        Switch to {u.role === 'ADMIN' ? 'USER' : 'ADMIN'}
-                      </button>
-                      <button
-                        onClick={() => handleDeleteUser(u.id, u.email)}
-                        className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 cursor-pointer"
-                        title="Delete User"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      {u.role === 'ADMIN' ? (
+                        <span className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-100">
+                          Primary Admin
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => handleDeleteUser(u.id, u.email)}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 cursor-pointer"
+                          title="Delete User"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -2022,50 +2302,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       {/* SUB-TAB 8: AUDIT LOG */}
       {activeSubTab === 'audit' && (
-        <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-sm space-y-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-base font-extrabold text-slate-900">Administrator Activity & Audit Log</h2>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Verifiable audit trail of all administrative product creations, publications, status changes, and catalog updates.
-              </p>
-            </div>
-            <button
-              onClick={loadAuxData}
-              className="px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center gap-1.5 cursor-pointer"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-              <span>Refresh Log</span>
-            </button>
-          </div>
-
-          <div className="overflow-x-auto border border-slate-200 rounded-2xl">
-            <table className="w-full text-left text-xs text-slate-700">
-              <thead className="bg-slate-50 border-b border-slate-200 text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
-                <tr>
-                  <th className="p-3.5">Action</th>
-                  <th className="p-3.5">Target Entity</th>
-                  <th className="p-3.5">Admin</th>
-                  <th className="p-3.5">Details</th>
-                  <th className="p-3.5">Timestamp</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {auditLogs.map((log) => (
-                  <tr key={log.id} className="hover:bg-slate-50/80">
-                    <td className="p-3.5 font-bold text-slate-900">{log.action}</td>
-                    <td className="p-3.5 font-medium text-slate-800">{log.targetEntity}</td>
-                    <td className="p-3.5 text-slate-600">{log.adminName}</td>
-                    <td className="p-3.5 text-slate-400 font-mono text-[11px]">{log.details || '—'}</td>
-                    <td className="p-3.5 whitespace-nowrap text-slate-500 text-[11px]">
-                      {new Date(log.timestamp).toLocaleString()}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <AuditLogSection
+          logs={auditLogs}
+          onRefresh={loadAuxData}
+          onShowToast={onShowToast}
+        />
       )}
 
       {/* SUB-TAB 9: PLATFORM SETTINGS & IMPORT/EXPORT */}

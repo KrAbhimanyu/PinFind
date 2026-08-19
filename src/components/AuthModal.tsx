@@ -56,12 +56,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   };
 
-  const handleFillAdminDemo = () => {
-    setEmail('admin@pinfind.com');
-    setPassword('admin123');
-    setError(null);
-  };
-
   return (
     <div
       id="auth-modal-backdrop"
@@ -133,7 +127,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder={mode === 'admin-login' ? 'admin@pinfind.com' : 'you@example.com'}
+                placeholder="name@example.com"
                 className="w-full pl-10 pr-4 py-2.5 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-900 focus:bg-white focus:border-slate-400 focus:outline-none"
               />
             </div>
@@ -153,21 +147,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               />
             </div>
           </div>
-
-          {mode === 'admin-login' && (
-            <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl flex items-center justify-between">
-              <div className="text-[11px] text-slate-600">
-                <span className="font-bold text-slate-800">Admin Account:</span> admin@pinfind.com / admin123
-              </div>
-              <button
-                type="button"
-                onClick={handleFillAdminDemo}
-                className="px-2.5 py-1 text-[10px] font-bold bg-slate-200 hover:bg-slate-300 text-slate-800 rounded-lg transition-colors cursor-pointer"
-              >
-                Auto-fill
-              </button>
-            </div>
-          )}
 
           <button
             type="submit"

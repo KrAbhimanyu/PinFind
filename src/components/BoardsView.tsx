@@ -1,18 +1,24 @@
 import React, { useState } from 'react';
 import { Board, Product } from '../types';
 import { MasonryGrid } from './MasonryGrid';
-import { FolderHeart, Plus, ArrowLeft, Trash2, Edit3, Compass, Sparkles, Layers } from 'lucide-react';
+import { FolderHeart, Plus, ArrowLeft, Trash2, Edit3, Compass, Sparkles, Layers, FileText, Code } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
 interface BoardsViewProps {
   boards: Board[];
   allProducts: Product[];
   savedProductIds: string[];
+  watchlistProductIds?: string[];
   onCreateBoard: (name: string, description?: string) => void;
   onDeleteBoard: (boardId: string) => void;
   onOpenDetail: (product: Product) => void;
   onTrackClick: (product: Product, location: 'card_quick_button' | 'card_hover_button') => void;
   onToggleSave: (productId: string) => void;
+  onToggleWatchlist?: (product: Product, e: React.MouseEvent) => void;
+  onFindSimilar?: (product: Product, e: React.MouseEvent) => void;
+  onOpenEmbed?: (product: Product, e: React.MouseEvent) => void;
+  onExportMoodBoard?: (board: Board) => void;
+  onEmbedBoard?: (board: Board) => void;
   onSaveToBoard: (boardId: string, productId: string) => void;
   onCreateAndSaveBoard: (boardName: string, productId: string) => void;
   onExploreMore: () => void;
@@ -23,11 +29,17 @@ export const BoardsView: React.FC<BoardsViewProps> = ({
   boards,
   allProducts,
   savedProductIds,
+  watchlistProductIds = [],
   onCreateBoard,
   onDeleteBoard,
   onOpenDetail,
   onTrackClick,
   onToggleSave,
+  onToggleWatchlist,
+  onFindSimilar,
+  onOpenEmbed,
+  onExportMoodBoard,
+  onEmbedBoard,
   onSaveToBoard,
   onCreateAndSaveBoard,
   onExploreMore,
@@ -89,7 +101,29 @@ export const BoardsView: React.FC<BoardsViewProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-2 self-start sm:self-center">
+          <div className="flex items-center gap-2 self-start sm:self-center flex-wrap">
+            {onExportMoodBoard && (
+              <button
+                onClick={() => onExportMoodBoard(selectedBoard)}
+                className="px-3.5 py-2 rounded-xl text-xs font-bold bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 transition-colors flex items-center gap-1.5 cursor-pointer"
+                title="Export high-resolution PDF / Print mood board"
+              >
+                <FileText className="w-3.5 h-3.5 text-rose-600" />
+                <span>Export Mood Board</span>
+              </button>
+            )}
+
+            {onEmbedBoard && (
+              <button
+                onClick={() => onEmbedBoard(selectedBoard)}
+                className="px-3.5 py-2 rounded-xl text-xs font-bold bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors flex items-center gap-1.5 cursor-pointer"
+                title="Embed board widget on external websites"
+              >
+                <Code className="w-3.5 h-3.5 text-slate-600" />
+                <span>Embed Board</span>
+              </button>
+            )}
+
             <button
               onClick={onExploreMore}
               className="px-4 py-2 rounded-xl text-xs font-bold bg-slate-900 text-white hover:bg-slate-800 transition-colors flex items-center gap-1.5 cursor-pointer"
@@ -137,9 +171,13 @@ export const BoardsView: React.FC<BoardsViewProps> = ({
             products={boardProducts}
             boards={boards}
             savedProductIds={savedProductIds}
+            watchlistProductIds={watchlistProductIds}
             onOpenDetail={onOpenDetail}
             onTrackClick={onTrackClick}
             onToggleSave={onToggleSave}
+            onToggleWatchlist={onToggleWatchlist}
+            onFindSimilar={onFindSimilar}
+            onOpenEmbed={onOpenEmbed}
             onSaveToBoard={onSaveToBoard}
             onCreateAndSaveBoard={onCreateAndSaveBoard}
             onResetFilters={() => {}}

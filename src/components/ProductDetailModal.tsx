@@ -3,11 +3,14 @@ import { Product, Board, ClickEvent } from '../types';
 import { 
   X, ExternalLink, Bookmark, Share2, Check, Sparkles, 
   TrendingUp, ShieldCheck, Tag, Heart, ArrowUpRight, 
-  ChevronLeft, ChevronRight, Copy, Flame, Zap
+  ChevronLeft, ChevronRight, Copy, Flame, Zap, Scan, Bell, BellRing, Code,
+  CreditCard, ChevronDown, ChevronUp, Clock, TrendingDown, Info
 } from 'lucide-react';
 import { SaveToBoardDropdown } from './SaveToBoardDropdown';
 import { SharePopover } from './SharePopover';
 import { calculateProductSpike } from '../services/storage';
+import { formatPrice } from '../utils/formatters';
+import { formatOfferHeadline } from '../utils/offerEngine';
 import confetti from 'canvas-confetti';
 
 interface ProductDetailModalProps {
@@ -17,10 +20,14 @@ interface ProductDetailModalProps {
   boards: Board[];
   clicks?: ClickEvent[];
   isSaved: boolean;
+  isWatchlisted?: boolean;
   onClose: () => void;
   onSelectProduct: (product: Product) => void;
   onTrackClick: (product: Product, location: 'detail_primary_btn' | 'related_pin_btn') => void;
   onToggleSave: (productId: string) => void;
+  onToggleWatchlist?: (product: Product) => void;
+  onFindSimilar?: (product: Product) => void;
+  onOpenEmbed?: (product: Product) => void;
   onSaveToBoard: (boardId: string, productId: string) => void;
   onCreateAndSaveBoard: (boardName: string, productId: string) => void;
   onSelectTag: (tag: string) => void;
@@ -35,10 +42,14 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
   boards,
   clicks = [],
   isSaved,
+  isWatchlisted = false,
   onClose,
   onSelectProduct,
   onTrackClick,
   onToggleSave,
+  onToggleWatchlist,
+  onFindSimilar,
+  onOpenEmbed,
   onSaveToBoard,
   onCreateAndSaveBoard,
   onSelectTag,
@@ -47,6 +58,7 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
 }) => {
   const [showBoardDropdown, setShowBoardDropdown] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
+  const [showBankOffers, setShowBankOffers] = useState(true);
 
   // Compute 24-hour click spike indicator
   const { hasClickSpike, spikePercentage } = useMemo(() => {
@@ -146,10 +158,51 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
     }
   };
 
-  // Find related products (same category or shared tags, excluding current)
-  const relatedProducts = allProducts
-    .filter(p => p.id !== product.id && (p.category === product.category || p.tags.some(t => product.tags.includes(t))))
-    .slice(0, 6);
+  // Find similar pins from the same category (excluding current item)
+  const similarCategoryPins = useMemo(() => {
+    return allProducts
+      .filter(p => p.id !== product.id && p.category.toLowerCase() === product.category.toLowerCase() && p.status === 'PUBLISHED')
+      .slice(0, 8);
+  }, [allProducts, product.id, product.category]);
+
+  const handleShareTwitter = () => {
+    const shareUrl = `${window.location.origin}${window.location.pathname}#p/${product.slug}`;
+    const shareText = `Discover ${product.name} on PinFind - Curated in ${product.category}`;
+    window.open(
+      `https://twitter.com/intent/tweet?text=${encodeURIComponent(shareText)}&url=${encodeURIComponent(shareUrl)}`,
+      '_blank',
+      'noopener,noreferrer,width=600,height=500'
+    );
+  };
+
+  const handleSharePinterest = () => {
+    const shareUrl = `${window.location.origin}${window.location.pathname}#p/${product.slug}`;
+    const shareText = `Curated Find: ${product.name} - ${product.shortDescription}`;
+    window.open(
+      `https://pinterest.com/pin/create/button/?url=${encodeURIComponent(shareUrl)}&media=${encodeURIComponent(product.imageUrl)}&description=${encodeURIComponent(shareText)}`,
+      '_blank',
+      'noopener,noreferrer,width=750,height=600'
+    );
+  };
+
+  const handleCopyDirectLink = async () => {
+    const shareUrl = `${window.location.origin}${window.location.pathname}#p/${product.slug}`;
+    try {
+      if (navigator.clipboard) {
+        await navigator.clipboard.writeText(shareUrl);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = shareUrl;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      onShowToast('Direct product URL copied to clipboard!');
+    } catch {
+      onShowToast('Failed to copy link. Please open Share dialog.');
+    }
+  };
 
   return (
     <>
@@ -238,16 +291,58 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
               </div>
             </div>
 
-            {/* Top Right Action Buttons: Share & Save */}
-            <div className="flex items-center gap-2 relative">
+            {/* Top Right Action Buttons: Lens, Watchlist, Embed, Share & Save */}
+            <div className="flex items-center gap-1.5 sm:gap-2 relative">
+              {/* AI Lens: Find Similar */}
+              {onFindSimilar && (
+                <button
+                  id="detail-lens-btn"
+                  onClick={() => onFindSimilar(product)}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-rose-50 hover:text-rose-600 transition-colors cursor-pointer"
+                  title="Find Similar Aesthetics (AI Lens)"
+                >
+                  <Scan className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Find Similar</span>
+                </button>
+              )}
+
+              {/* Price Drop Alert */}
+              {onToggleWatchlist && (
+                <button
+                  id="detail-watchlist-btn"
+                  onClick={() => onToggleWatchlist(product)}
+                  className={`flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-semibold transition-colors cursor-pointer ${
+                    isWatchlisted
+                      ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
+                      : 'bg-slate-100 text-slate-700 hover:bg-amber-50 hover:text-amber-700'
+                  }`}
+                  title="Track Price Drop Alerts"
+                >
+                  {isWatchlisted ? <BellRing className="w-3.5 h-3.5 text-amber-600" /> : <Bell className="w-3.5 h-3.5" />}
+                  <span className="hidden sm:inline">{isWatchlisted ? 'Watching' : 'Price Alert'}</span>
+                </button>
+              )}
+
+              {/* Embed Widget Snippet */}
+              {onOpenEmbed && (
+                <button
+                  id="detail-embed-btn"
+                  onClick={() => onOpenEmbed(product)}
+                  className="p-2 rounded-full text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors cursor-pointer"
+                  title="Embed Widget"
+                >
+                  <Code className="w-3.5 h-3.5" />
+                </button>
+              )}
+
               <button
                 id="detail-share-btn"
                 onClick={handleOpenShare}
-                className="flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 transition-colors cursor-pointer"
+                className="flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 transition-colors cursor-pointer"
                 title="Share this product"
               >
                 <Share2 className="w-3.5 h-3.5 text-slate-600" />
-                <span>Share</span>
+                <span className="hidden sm:inline">Share</span>
               </button>
 
               <button
@@ -347,23 +442,152 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
 
                   {/* Pricing & Value Box */}
                   {product.price !== undefined && (
-                    <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 flex items-center justify-between">
-                      <div>
-                        <span className="text-xs uppercase font-semibold text-slate-400 block mb-0.5">Estimated Price</span>
-                        <div className="flex items-baseline gap-2">
-                          <span className="text-3xl font-black text-slate-900">
-                            {product.currency || '$'}{product.price}
+                    <div className="space-y-3">
+                      <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 flex items-center justify-between">
+                        <div>
+                          <span className="text-xs uppercase font-semibold text-slate-400 block mb-0.5">
+                            {product.originalPrice && product.originalPrice > product.price ? 'Special Offer Price' : 'Selling Price'}
                           </span>
-                          {product.originalPrice && product.originalPrice > product.price && (
-                            <span className="text-sm font-medium text-slate-400 line-through">
-                              {product.currency || '$'}{product.originalPrice}
+                          <div className="flex items-baseline gap-2.5">
+                            <span className="text-3xl font-black text-slate-900">
+                              {formatPrice(product.price, product.currency)}
+                            </span>
+                            {product.originalPrice && product.originalPrice > product.price && (
+                              <>
+                                <span className="text-sm font-medium text-slate-400 line-through">
+                                  {formatPrice(product.originalPrice, product.currency)}
+                                </span>
+                                <span className="px-2 py-0.5 rounded-full text-[11px] font-black bg-rose-600 text-white">
+                                  {Math.round(((product.originalPrice - product.price) / product.originalPrice) * 100)}% OFF
+                                </span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-[11px] font-semibold text-slate-500 bg-white px-2.5 py-1.5 rounded-xl border border-slate-200 block">
+                            On {product.retailer || 'Merchant'}
+                          </span>
+                          {product.availability === 'OUT_OF_STOCK' && (
+                            <span className="text-[10px] font-bold text-red-600 mt-1 block">
+                              Currently Out of Stock
                             </span>
                           )}
                         </div>
                       </div>
-                      <span className="text-[11px] font-semibold text-slate-500 bg-white px-2.5 py-1.5 rounded-xl border border-slate-200">
-                        Prices may vary on {product.retailer}
-                      </span>
+
+                      {/* Best Card Offer Highlight Banner */}
+                      {product.bestOffer && (
+                        <div className="p-3.5 rounded-2xl bg-gradient-to-r from-emerald-500/10 via-teal-500/10 to-transparent border border-emerald-500/30 flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-2.5">
+                            <span className="p-2 rounded-xl bg-emerald-600 text-white shrink-0">
+                              <CreditCard className="w-4 h-4" />
+                            </span>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-bold text-emerald-950">
+                                  Best Offer: {product.bestOffer.bank} ({product.bestOffer.cardType})
+                                </span>
+                                <span className="px-1.5 py-0.5 rounded-md text-[10px] font-black bg-emerald-600 text-white">
+                                  Save {formatPrice(product.bestOffer.discountAmount, product.currency)}
+                                </span>
+                              </div>
+                              <p className="text-[11px] font-medium text-emerald-900 mt-0.5">
+                                {product.bestOffer.discountText}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="text-right shrink-0">
+                            <span className="text-[10px] uppercase font-bold text-emerald-700 block">Effective Price</span>
+                            <span className="text-base font-black text-emerald-950">
+                              {formatPrice(product.bestOffer.effectivePrice, product.currency)}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Expandable Bank Offers Accordion */}
+                      {product.offers && product.offers.length > 0 && (
+                        <div className="rounded-2xl border border-slate-200 overflow-hidden bg-white">
+                          <button
+                            type="button"
+                            onClick={() => setShowBankOffers(!showBankOffers)}
+                            className="w-full px-4 py-3 bg-slate-50 hover:bg-slate-100/80 flex items-center justify-between text-xs font-bold text-slate-800 transition-colors"
+                          >
+                            <span className="flex items-center gap-2">
+                              <CreditCard className="w-4 h-4 text-emerald-600" />
+                              <span>Verified Bank & Card Offers ({product.offers.length})</span>
+                            </span>
+                            {showBankOffers ? <ChevronUp className="w-4 h-4 text-slate-500" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+                          </button>
+
+                          {showBankOffers && (
+                            <div className="p-3 divide-y divide-slate-100 max-h-56 overflow-y-auto">
+                              {product.offers.map((offer) => (
+                                <div key={offer.id} className="py-2.5 first:pt-0 last:pb-0 text-xs space-y-1">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-bold text-slate-900">{offer.bank}</span>
+                                      <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-700">
+                                        {offer.cardType}
+                                      </span>
+                                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                        offer.discountType === 'CASHBACK' ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
+                                      }`}>
+                                        {offer.discountType === 'PERCENTAGE' && `${offer.discountPercentage}% OFF`}
+                                        {offer.discountType === 'FLAT' && `Flat ${formatPrice(offer.flatDiscount || 0, product.currency)} OFF`}
+                                        {offer.discountType === 'CASHBACK' && `Cashback: ${formatPrice(offer.cashback || offer.flatDiscount || 0, product.currency)}`}
+                                        {offer.discountType === 'EMI_DISCOUNT' && `EMI Offer`}
+                                      </span>
+                                    </div>
+
+                                    {offer.calculatedDiscount && offer.calculatedDiscount > 0 ? (
+                                      <span className="font-bold text-emerald-700 text-xs">
+                                        -{formatPrice(offer.calculatedDiscount, product.currency)}
+                                      </span>
+                                    ) : null}
+                                  </div>
+
+                                  <p className="text-slate-600 text-[11px] leading-relaxed">
+                                    {offer.terms || formatOfferHeadline(offer, product.currency)}
+                                  </p>
+
+                                  <div className="flex items-center gap-3 text-[10px] text-slate-400">
+                                    {offer.minimumTransaction && (
+                                      <span>Min. Spend: {formatPrice(offer.minimumTransaction, product.currency)}</span>
+                                    )}
+                                    {offer.maximumDiscount && (
+                                      <span>Max. Cap: {formatPrice(offer.maximumDiscount, product.currency)}</span>
+                                    )}
+                                    {offer.expiryDate && (
+                                      <span>Expires: {new Date(offer.expiryDate).toLocaleDateString()}</span>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Price History Points if available */}
+                      {product.priceHistory && product.priceHistory.length > 1 && (
+                        <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200/80 text-xs space-y-2">
+                          <span className="font-bold text-slate-700 text-[11px] uppercase tracking-wider flex items-center gap-1.5">
+                            <Clock className="w-3.5 h-3.5 text-slate-400" />
+                            Recent Price History
+                          </span>
+                          <div className="flex items-center gap-2 overflow-x-auto py-1">
+                            {product.priceHistory.slice(-5).map((pt, idx) => (
+                              <div key={idx} className="px-2.5 py-1 rounded-xl bg-white border border-slate-200 shrink-0 text-center">
+                                <span className="text-[10px] text-slate-400 block">{pt.formattedDate || new Date(pt.date).toLocaleDateString()}</span>
+                                <span className="font-black text-slate-900 text-xs">{formatPrice(pt.price, product.currency)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -377,6 +601,57 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
                       <span>Visit Site on {product.retailer || 'Merchant'}</span>
                       <ArrowUpRight className="w-5 h-5 stroke-[2.5] group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
                     </button>
+
+                    {/* Social Share & Direct Link Bar */}
+                    <div className="p-3 bg-slate-50 border border-slate-200/90 rounded-2xl space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                          <Share2 className="w-3.5 h-3.5 text-indigo-600" />
+                          Share this Pin
+                        </span>
+                        <button
+                          onClick={handleOpenShare}
+                          className="text-[11px] font-bold text-slate-500 hover:text-slate-800 transition-colors"
+                        >
+                          All Share Options →
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2">
+                        <button
+                          id="detail-copy-link-action-btn"
+                          type="button"
+                          onClick={handleCopyDirectLink}
+                          className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-white hover:bg-slate-100 border border-slate-200 text-slate-800 text-xs font-bold transition-all shadow-xs cursor-pointer group"
+                          title="Copy Direct Product URL"
+                        >
+                          <Copy className="w-3.5 h-3.5 text-slate-500 group-hover:text-slate-800" />
+                          <span>Copy URL</span>
+                        </button>
+
+                        <button
+                          id="detail-share-pinterest-btn"
+                          type="button"
+                          onClick={handleSharePinterest}
+                          className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-[#E60023] hover:bg-[#ad081b] text-white text-xs font-bold transition-all shadow-xs cursor-pointer"
+                          title="Share to Pinterest"
+                        >
+                          <span className="font-serif font-black text-xs">P</span>
+                          <span>Pinterest</span>
+                        </button>
+
+                        <button
+                          id="detail-share-twitter-btn"
+                          type="button"
+                          onClick={handleShareTwitter}
+                          className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-slate-900 hover:bg-black text-white text-xs font-bold transition-all shadow-xs cursor-pointer"
+                          title="Share to X / Twitter"
+                        >
+                          <span className="font-bold text-xs">𝕏</span>
+                          <span>Twitter</span>
+                        </button>
+                      </div>
+                    </div>
 
                     {/* Store Curation Disclosure Micro-Banner */}
                     <div className="flex items-start gap-2 p-2.5 rounded-xl bg-slate-50 border border-slate-200/60 text-[11px] text-slate-500 leading-relaxed">
@@ -447,44 +722,77 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
               </div>
             </div>
 
-            {/* Related Products / "More Like This" Section */}
-            {relatedProducts.length > 0 && (
-              <div className="pt-8 border-t border-slate-200">
-                <div className="flex items-center justify-between mb-4">
-                  <div>
-                    <h2 className="text-lg font-bold text-slate-900">More Aesthetic Finds Like This</h2>
-                    <p className="text-xs text-slate-500">Curated recommendations from {product.category}</p>
-                  </div>
+            {/* Similar Pins Section (Filtered by same category) */}
+            <div id="similar-pins-section" className="pt-8 border-t border-slate-200 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-extrabold text-slate-900 flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-rose-600" />
+                    Similar Pins in {product.category}
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    Discover more curated aesthetic finds from the <strong className="text-slate-700">{product.category}</strong> collection
+                  </p>
                 </div>
+                <button
+                  onClick={() => {
+                    onSelectCategory(product.category);
+                    onClose();
+                  }}
+                  className="text-xs font-bold text-rose-600 hover:text-rose-700 flex items-center gap-1 cursor-pointer transition-colors"
+                >
+                  <span>Explore all in {product.category}</span>
+                  <ArrowUpRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
-                  {relatedProducts.map(rel => (
+              {similarCategoryPins.length > 0 ? (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-4 gap-3.5">
+                  {similarCategoryPins.map(sim => (
                     <div
-                      key={rel.id}
-                      onClick={() => onSelectProduct(rel)}
-                      className="group cursor-pointer rounded-2xl bg-slate-50 border border-slate-200/80 p-2 hover:shadow-md transition-all flex flex-col"
+                      key={sim.id}
+                      onClick={() => onSelectProduct(sim)}
+                      className="group cursor-pointer rounded-2xl bg-white border border-slate-200/90 p-2.5 hover:shadow-lg hover:border-slate-300 transition-all flex flex-col justify-between transform hover:-translate-y-0.5"
                     >
-                      <div className="relative aspect-square rounded-xl overflow-hidden bg-slate-100 mb-2">
+                      <div className="relative aspect-[4/5] rounded-xl overflow-hidden bg-slate-100 mb-2">
                         <img
-                          src={rel.imageUrl}
-                          alt={rel.name}
+                          src={sim.imageUrl}
+                          alt={sim.name}
                           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                         />
+                        {sim.isTrending && (
+                          <span className="absolute top-2 left-2 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider bg-rose-600 text-white shadow-xs">
+                            Trending
+                          </span>
+                        )}
                       </div>
-                      <div className="flex-1 flex flex-col justify-between">
-                        <h4 className="text-xs font-semibold text-slate-900 line-clamp-1 group-hover:text-rose-600 transition-colors">
-                          {rel.name}
+                      <div>
+                        <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">
+                          {sim.retailer || product.category}
+                        </span>
+                        <h4 className="text-xs font-bold text-slate-900 line-clamp-1 group-hover:text-rose-600 transition-colors">
+                          {sim.name}
                         </h4>
-                        <div className="mt-1 flex items-center justify-between text-[11px]">
-                          <span className="text-slate-400 font-medium">{rel.retailer}</span>
-                          {rel.price && <span className="font-bold text-slate-900">${rel.price}</span>}
+                        <div className="mt-1 flex items-center justify-between text-xs">
+                          {sim.price !== undefined && (
+                            <span className="font-extrabold text-slate-900">
+                              {formatPrice(sim.price, sim.currency)}
+                            </span>
+                          )}
+                          <span className="text-[10px] text-slate-400">
+                            {sim.clicksCount || 0} clicks
+                          </span>
                         </div>
                       </div>
                     </div>
                   ))}
                 </div>
-              </div>
-            )}
+              ) : (
+                <div className="p-6 text-center bg-slate-50 rounded-2xl border border-slate-200/60 text-xs text-slate-400">
+                  <span>No other items currently published in {product.category}.</span>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>

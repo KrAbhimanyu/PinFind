@@ -1,7 +1,8 @@
 import { 
   Product, Board, User, ClickEvent, AdminAnalyticsSummary, 
   ProductStatus, Category, AuditLog, PlatformSettings, UserRole,
-  PinterestSyncState, PinterestBoardItem 
+  PinterestSyncState, PinterestBoardItem, PaymentOffer, BestOfferSummary,
+  PriceHistoryPoint, PriceDropInfo
 } from '../types';
 
 const TOKEN_KEY = 'pinfind_auth_token';
@@ -107,6 +108,7 @@ export const api = {
       return {
         platformName: 'PinFind Discovery',
         tagline: 'Visual Product Discovery & Curated Design Collections',
+        affiliateDisclaimer: 'We curate products based on design excellence and quality. All product links take you directly to verified official retailer stores.',
         storeDisclaimer: 'We curate products based on design excellence and quality. All product links take you directly to verified official retailer stores.',
         defaultCurrency: 'USD',
         contactEmail: 'hello@pinfind.store',
@@ -219,6 +221,48 @@ export const api = {
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: 'Image upload failed' }));
       throw new Error(err.error || 'Failed to upload image');
+    }
+    return res.json();
+  },
+
+  // AI Smart Product Auto-Enrichment
+  async enrichProductLink(url?: string, rawText?: string): Promise<Partial<Product>> {
+    const res = await fetch('/api/admin/enrich-link', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ url, rawText }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'AI link analysis failed' }));
+      throw new Error(err.error || 'Failed to auto-enrich product link');
+    }
+    const data = await res.json();
+    return data.enriched;
+  },
+
+  // AI SEO Product Description Generator
+  async generateAiDescription(params: {
+    title?: string;
+    imageUrl?: string;
+    category?: string;
+    brand?: string;
+    retailer?: string;
+    keywords?: string;
+    tone?: string;
+  }): Promise<{
+    shortDescription: string;
+    detailedDescription: string;
+    keyHighlights: string[];
+    seoKeywords: string[];
+  }> {
+    const res = await fetch('/api/admin/generate-description', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify(params),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'AI description generation failed' }));
+      throw new Error(err.error || 'Failed to generate AI description');
     }
     return res.json();
   },
@@ -505,6 +549,7 @@ export const api = {
         profile: null,
         syncedBoards: [],
         autoSyncOnPublish: false,
+        totalPinsExported: 0,
       };
     }
   },
@@ -591,6 +636,244 @@ export const api = {
       body: JSON.stringify(settings),
     });
     if (!res.ok) throw new Error('Failed to update Pinterest settings');
+    return res.json();
+  },
+
+  // ==========================================
+  // LINK HEALTH SCANNER & DEAD LINK CHECKER
+  // ==========================================
+  async checkLinkHealth(): Promise<import('../types').LinkHealthReport> {
+    const res = await fetch('/api/admin/check-links', {
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error('Failed to scan affiliate links');
+    return res.json();
+  },
+
+  async fixAffiliateLink(productId: string, newAffiliateLink?: string): Promise<{ success: boolean; product: Product }> {
+    const res = await fetch('/api/admin/fix-link', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ productId, newAffiliateLink }),
+    });
+    if (!res.ok) throw new Error('Failed to fix affiliate link');
+    return res.json();
+  },
+
+  // ==========================================
+  // AI VISUAL FIND SIMILAR
+  // ==========================================
+  async findSimilarProducts(params: {
+    productId?: string;
+    category?: string;
+    tags?: string[];
+    name?: string;
+    shortDescription?: string;
+  }): Promise<{
+    similarProducts: Product[];
+    sourceProduct?: Product;
+    matchDetails?: { id: string; score: number; explanation: string }[];
+  }> {
+    const res = await fetch('/api/products/find-similar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    if (!res.ok) return { similarProducts: [] };
+    return res.json();
+  },
+
+  // ==========================================
+  // SMART UTM & SUB-ID SETTINGS
+  // ==========================================
+  async getUtmSettings(): Promise<import('../types').UtmSettings> {
+    const res = await fetch('/api/admin/utm-settings', {
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error('Failed to load UTM settings');
+    const data = await res.json();
+    return data.utmSettings;
+  },
+
+  async updateUtmSettings(settings: import('../types').UtmSettings): Promise<import('../types').UtmSettings> {
+    const res = await fetch('/api/admin/utm-settings', {
+      method: 'PUT',
+      headers: authHeaders(),
+      body: JSON.stringify(settings),
+    });
+    if (!res.ok) throw new Error('Failed to save UTM settings');
+    const data = await res.json();
+    return data.utmSettings;
+  },
+
+  // ==========================================
+  // TRAFFIC & VISITOR ANALYTICS APIS
+  // ==========================================
+  async trackPageView(params: {
+    path: string;
+    referrer?: string;
+    visitorId?: string;
+    deviceType?: 'desktop' | 'mobile' | 'tablet';
+  }): Promise<{ success: boolean; id?: string }> {
+    try {
+      const res = await fetch('/api/traffic/track', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      });
+      if (!res.ok) return { success: false };
+      return res.json();
+    } catch {
+      return { success: false };
+    }
+  },
+
+  async getAdminTrafficStats(): Promise<import('../types').AdminTrafficStats> {
+    const res = await fetch('/api/admin/traffic', {
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error('Failed to load visitor traffic statistics');
+    return res.json();
+  },
+
+  // ==========================================
+  // REAL-TIME PRICE & CARD DISCOUNT INTELLIGENCE
+  // ==========================================
+  async fetchProductIntelligence(affiliateUrl: string): Promise<{
+    name: string;
+    shortDescription?: string;
+    imageUrl?: string;
+    currentPrice?: number;
+    originalPrice?: number;
+    currency: string;
+    discountPercentage?: number;
+    retailer: string;
+    brand?: string;
+    availability: 'IN_STOCK' | 'OUT_OF_STOCK' | 'PREORDER' | 'UNKNOWN';
+    offers: PaymentOffer[];
+    bestOffer: BestOfferSummary | null;
+    verifiedAt: string;
+    affiliateUrl: string;
+    source: string;
+  }> {
+    const res = await fetch('/api/admin/fetch-product', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ affiliateUrl }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to analyze product URL' }));
+      throw new Error(err.error || 'Failed to analyze product URL');
+    }
+    return res.json();
+  },
+
+  async refreshProductPrice(productId: string): Promise<{
+    success: boolean;
+    product: Product;
+    priceChanged: boolean;
+    priceDifference: number;
+    previousPrice?: number;
+  }> {
+    const res = await fetch(`/api/admin/refresh-product/${productId}`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to refresh product' }));
+      throw new Error(err.error || 'Failed to refresh product');
+    }
+    return res.json();
+  },
+
+  async refreshAllProductsPrice(): Promise<{
+    total: number;
+    updated: number;
+    priceDrops: number;
+    errors: number;
+    results: any[];
+  }> {
+    const res = await fetch('/api/admin/refresh-all-products', {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to batch refresh products' }));
+      throw new Error(err.error || 'Failed to batch refresh products');
+    }
+    return res.json();
+  },
+
+  async updateProductOffers(productId: string, offers: PaymentOffer[]): Promise<{
+    product: Product;
+    offers: PaymentOffer[];
+    bestOffer: BestOfferSummary | null;
+  }> {
+    const res = await fetch(`/api/admin/products/${productId}/offers`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ offers }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to update product offers' }));
+      throw new Error(err.error || 'Failed to update product offers');
+    }
+    return res.json();
+  },
+
+  async refreshProductOffers(productId: string): Promise<{
+    success: boolean;
+    product: Product;
+    priceChanged: boolean;
+    priceDifference: number;
+    previousPrice?: number;
+    offersCount: number;
+    bestOffer: BestOfferSummary | null;
+  }> {
+    const res = await fetch(`/api/admin/products/${productId}/refresh-offers`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to refresh product offers' }));
+      throw new Error(err.error || 'Failed to refresh product offers');
+    }
+    return res.json();
+  },
+
+  async getPriceSyncStatus(): Promise<import('../types').PriceSyncStatus> {
+    const res = await fetch('/api/admin/price-sync/status', {
+      headers: authHeaders(),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to get price sync status' }));
+      throw new Error(err.error || 'Failed to get price sync status');
+    }
+    return res.json();
+  },
+
+  async updatePriceSyncSettings(enabled: boolean, intervalMinutes: number): Promise<import('../types').PriceSyncStatus> {
+    const res = await fetch('/api/admin/price-sync/settings', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ enabled, intervalMinutes }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to update price sync settings' }));
+      throw new Error(err.error || 'Failed to update price sync settings');
+    }
+    return res.json();
+  },
+
+  async triggerPriceSync(): Promise<{ success: boolean; message: string }> {
+    const res = await fetch('/api/admin/price-sync/trigger', {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to trigger background price sync' }));
+      throw new Error(err.error || 'Failed to trigger background price sync');
+    }
     return res.json();
   },
 };

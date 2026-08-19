@@ -6,13 +6,15 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Product, Board, ClickEvent, FilterState, ActiveTab, 
-  User, ProductStatus, AdminAnalyticsSummary 
+  User, ProductStatus, AdminAnalyticsSummary, WatchlistProduct, LookbookGuide 
 } from './types';
 import { 
   getStoredBoards, saveStoredBoards, 
   getUserSavedIds, saveUserSavedIds,
   getStoredFilters, saveStoredFilters,
-  calculateProductSpike 
+  getStoredWatchlist, saveStoredWatchlist, toggleWatchlistProduct,
+  calculateProductSpike,
+  getOrCreateVisitorId, getClientDeviceType
 } from './services/storage';
 import { searchIndex } from './services/searchIndex';
 import { api } from './services/api';
@@ -29,6 +31,13 @@ import { AffiliateDisclosureModal } from './components/AffiliateDisclosureModal'
 import { NotificationToast } from './components/NotificationToast';
 import { Footer } from './components/Footer';
 
+// Newly Integrated Features & Modals
+import { EditorialLookbooks } from './components/EditorialLookbooks';
+import { PriceWatchlistModal } from './components/PriceWatchlistModal';
+import { FindSimilarModal } from './components/FindSimilarModal';
+import { EmbedPinModal } from './components/EmbedPinModal';
+import { MoodBoardExportModal } from './components/MoodBoardExportModal';
+
 export default function App() {
   // Authentication & Role state
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -41,15 +50,21 @@ export default function App() {
   const [analytics, setAnalytics] = useState<AdminAnalyticsSummary | null>(null);
   const [boards, setBoards] = useState<Board[]>(() => getStoredBoards());
   const [savedProductIds, setSavedProductIds] = useState<string[]>(() => getUserSavedIds());
+  const [watchlist, setWatchlist] = useState<WatchlistProduct[]>(() => getStoredWatchlist());
 
   // Navigation and Filter state
   const [activeTab, setActiveTab] = useState<ActiveTab>('discover');
   const [filterState, setFilterState] = useState<FilterState>(() => getStoredFilters());
   const [isGridLoading, setIsGridLoading] = useState<boolean>(false);
+  const [activeLookbookId, setActiveLookbookId] = useState<string | null>(null);
 
-  // Modals & Notifications
+  // Modals & Popovers
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [showDisclosureModal, setShowDisclosureModal] = useState<boolean>(false);
+  const [showWatchlistModal, setShowWatchlistModal] = useState<boolean>(false);
+  const [similarSourceProduct, setSimilarSourceProduct] = useState<Product | null>(null);
+  const [embedTarget, setEmbedTarget] = useState<{ product?: Product; board?: Board } | null>(null);
+  const [exportBoardTarget, setExportBoardTarget] = useState<Board | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const showToast = (msg: string) => {
@@ -60,6 +75,7 @@ export default function App() {
   };
 
   const isAdmin = currentUser?.role === 'ADMIN';
+  const watchlistProductIds = useMemo(() => watchlist.map(w => w.productId), [watchlist]);
 
   // 1. Initialize user session from server-side /api/auth/me
   const initAuth = useCallback(async () => {
@@ -141,6 +157,31 @@ export default function App() {
       showToast('Admin Console requires Administrator authentication.');
     }
   }, [activeTab, currentUser]);
+
+  // Automated Visitor & Page View Traffic Tracking
+  useEffect(() => {
+    let currentPath = '/';
+    if (activeTab === 'boards') {
+      currentPath = '/boards';
+    } else if (activeTab === 'admin') {
+      currentPath = '/admin';
+    } else if (selectedProduct) {
+      currentPath = `/pin/${selectedProduct.slug || selectedProduct.id}`;
+    } else if (filterState.category !== 'all') {
+      currentPath = `/category/${filterState.category}`;
+    }
+
+    const visitorId = getOrCreateVisitorId();
+    const deviceType = getClientDeviceType();
+    const referrer = document.referrer || 'Direct';
+
+    api.trackPageView({
+      path: currentPath,
+      referrer,
+      visitorId,
+      deviceType,
+    });
+  }, [activeTab, selectedProduct?.id, filterState.category]);
 
   // SEO hash sync (#p/product-slug) on mount & hash navigation
   useEffect(() => {
@@ -349,10 +390,98 @@ export default function App() {
     setAnalytics(null);
   };
 
+  // Price Drop Watchlist Handlers
+  const handleToggleWatchlist = (product: Product, e?: React.MouseEvent) => {
+    if (e) {
+      e.stopPropagation();
+    }
+    const currentPrice = product.price || 0;
+    const { isAdded, watchlist: updated } = toggleWatchlistProduct(product.id, currentPrice);
+    setWatchlist(updated);
+    if (isAdded) {
+      showToast(`Added "${product.name}" to Price Watchlist!`);
+    } else {
+      showToast(`Removed "${product.name}" from Price Watchlist.`);
+    }
+  };
+
+  const handleRemoveFromWatchlist = (productId: string) => {
+    const updated = watchlist.filter(w => w.productId !== productId);
+    setWatchlist(updated);
+    saveStoredWatchlist(updated);
+    showToast('Removed item from Price Watchlist.');
+  };
+
+  const handleUpdateWatchlistTarget = (productId: string, targetPrice: number, email?: string) => {
+    const updated = watchlist.map(w => {
+      if (w.productId === productId) {
+        return {
+          ...w,
+          targetPrice,
+          notifyEmail: email || w.notifyEmail,
+        };
+      }
+      return w;
+    });
+    setWatchlist(updated);
+    saveStoredWatchlist(updated);
+    showToast('Target alert price updated!');
+  };
+
+  // Find Similar (Visual Lens) Handler
+  const handleFindSimilar = (product: Product, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setSimilarSourceProduct(product);
+  };
+
+  // Embed Widget Handler
+  const handleOpenEmbed = (target: { product?: Product; board?: Board }, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setEmbedTarget(target);
+  };
+
+  // Mood Board High-Res Export Handler
+  const handleExportMoodBoard = (board: Board) => {
+    setExportBoardTarget(board);
+  };
+
+  // Editorial Lookbook Application Handler
+  const handleApplyLookbook = (guide: LookbookGuide) => {
+    setActiveLookbookId(guide.id);
+    setIsGridLoading(true);
+    setTimeout(() => setIsGridLoading(false), 200);
+
+    const updates: Partial<FilterState> = {
+      search: '',
+      category: guide.category || 'All Pins',
+      tag: guide.tag || null,
+      sortBy: 'trending',
+    };
+
+    if (guide.maxPrice) {
+      if (guide.maxPrice <= 999) updates.priceRange = 'under999';
+      else if (guide.maxPrice <= 2500) updates.priceRange = '1000to2500';
+    } else {
+      updates.priceRange = 'all';
+    }
+
+    setFilterState(prev => ({ ...prev, ...updates }));
+    setActiveTab('discover');
+    showToast(`Applied Lookbook: "${guide.title}"`);
+  };
+
+  const handleClearLookbook = () => {
+    setActiveLookbookId(null);
+    handleResetFilters();
+  };
+
   const handleUpdateFilter = (updates: Partial<FilterState>) => {
     if (updates.category !== undefined || updates.sortBy !== undefined || updates.tag !== undefined || updates.priceRange !== undefined) {
       setIsGridLoading(true);
       setTimeout(() => setIsGridLoading(false), 200);
+      if (activeLookbookId) {
+        setActiveLookbookId(null);
+      }
     }
     setFilterState(prev => ({ ...prev, ...updates }));
   };
@@ -360,6 +489,7 @@ export default function App() {
   const handleResetFilters = () => {
     setIsGridLoading(true);
     setTimeout(() => setIsGridLoading(false), 200);
+    setActiveLookbookId(null);
     setFilterState({
       search: '',
       category: 'All Pins',
@@ -369,6 +499,8 @@ export default function App() {
       priceRange: 'all',
       onlyTrending: false,
       onlyStaffPicks: false,
+      onlySpikes: false,
+      onlyOnSale: false,
     });
   };
 
@@ -395,24 +527,47 @@ export default function App() {
     }
 
     return products.filter((p) => {
-      // 1. FlexSearch fast index lookup
-      if (searchMatchedIdSet !== null && !searchMatchedIdSet.has(p.id)) {
+      // 0. Strict Requirement: ONLY products with PUBLISHED status appear on public discovery
+      const statusClean = (p.status || 'PUBLISHED').toString().trim().toUpperCase();
+      if (statusClean !== 'PUBLISHED') {
         return false;
       }
 
-      // 2. Category
-      if (filterState.category && filterState.category !== 'All Pins') {
-        if (p.category !== filterState.category) return false;
+      // 1. FlexSearch fast index lookup (with instant substring fallback)
+      if (searchMatchedIdSet !== null && !searchMatchedIdSet.has(p.id)) {
+        const q = filterState.search.toLowerCase().trim();
+        const matchesSubstring = 
+          p.name.toLowerCase().includes(q) ||
+          (p.shortDescription && p.shortDescription.toLowerCase().includes(q)) ||
+          (p.detailedNotes && p.detailedNotes.toLowerCase().includes(q)) ||
+          (p.category && p.category.toLowerCase().includes(q)) ||
+          (p.subcategory && p.subcategory.toLowerCase().includes(q)) ||
+          (p.retailer && p.retailer.toLowerCase().includes(q)) ||
+          (p.brand && p.brand.toLowerCase().includes(q)) ||
+          (p.tags && p.tags.some(t => t.toLowerCase().includes(q)));
+        if (!matchesSubstring) return false;
       }
 
-      // 3. Tag
+      // 2. Category (Case-insensitive matching for both category and subcategory)
+      if (filterState.category && filterState.category.trim().toLowerCase() !== 'all pins') {
+        const targetCat = filterState.category.trim().toLowerCase();
+        const pCat = (p.category || '').trim().toLowerCase();
+        const pSub = (p.subcategory || '').trim().toLowerCase();
+        if (pCat !== targetCat && pSub !== targetCat) return false;
+      }
+
+      // 3. Tag (Case-insensitive)
       if (filterState.tag) {
-        if (!p.tags?.includes(filterState.tag.toLowerCase())) return false;
+        const targetTag = filterState.tag.trim().toLowerCase();
+        if (!p.tags || !p.tags.some(t => t.trim().toLowerCase() === targetTag)) return false;
       }
 
-      // 4. Retailer
-      if (filterState.retailer && filterState.retailer !== 'All Retailers') {
-        if (p.retailer !== filterState.retailer) return false;
+      // 4. Retailer (Case-insensitive)
+      if (filterState.retailer && filterState.retailer.trim().toLowerCase() !== 'all retailers') {
+        const targetRet = filterState.retailer.trim().toLowerCase();
+        const pRet = (p.retailer || '').trim().toLowerCase();
+        const pBrand = (p.brand || '').trim().toLowerCase();
+        if (pRet !== targetRet && pBrand !== targetRet) return false;
       }
 
       // 5. Trending toggle
@@ -431,13 +586,19 @@ export default function App() {
         return false;
       }
 
-      // 8. Price Range
+      // 8. On Sale / Discount Deals toggle
+      if (filterState.onlyOnSale) {
+        const hasSale = Boolean(p.originalPrice && p.price && p.originalPrice > p.price);
+        if (!hasSale) return false;
+      }
+
+      // 9. Price Range (in INR ₹)
       if (filterState.priceRange !== 'all') {
         const price = p.price || 0;
-        if (filterState.priceRange === 'under25' && price >= 25) return false;
-        if (filterState.priceRange === '25to50' && (price < 25 || price > 50)) return false;
-        if (filterState.priceRange === '50to100' && (price < 50 || price > 100)) return false;
-        if (filterState.priceRange === 'over100' && price <= 100) return false;
+        if ((filterState.priceRange === 'under999' || filterState.priceRange === 'under25') && price >= 1000) return false;
+        if ((filterState.priceRange === '1000to2500' || filterState.priceRange === '25to50') && (price < 1000 || price > 2500)) return false;
+        if ((filterState.priceRange === '2500to5000' || filterState.priceRange === '50to100') && (price < 2500 || price > 5000)) return false;
+        if ((filterState.priceRange === 'over5000' || filterState.priceRange === 'over100') && price <= 5000) return false;
       }
 
       return true;
@@ -480,6 +641,12 @@ export default function App() {
         filterState={filterState}
         onUpdateFilter={handleUpdateFilter}
         savedCount={savedProductIds.length}
+        watchlistCount={watchlist.length}
+        onOpenWatchlist={() => setShowWatchlistModal(true)}
+        onOpenLookbooks={() => {
+          setActiveTab('discover');
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }}
         currentUser={currentUser}
         onOpenAuthModal={(mode = 'login') => {
           setAuthModalMode(mode);
@@ -504,17 +671,31 @@ export default function App() {
               onOpenDisclosure={() => setShowDisclosureModal(true)}
             />
 
+            {/* Editorial Aesthetic Lookbooks & Shopping Guides Carousel */}
+            {!filterState.search && (
+              <EditorialLookbooks
+                products={products}
+                activeGuideId={activeLookbookId}
+                onApplyGuide={handleApplyLookbook}
+                onClearGuide={handleClearLookbook}
+              />
+            )}
+
             {/* Pinterest Masonry Waterfall Grid with Skeleton loading */}
             <MasonryGrid
               products={filteredProducts}
               totalCatalogCount={products.length}
               boards={boards}
               savedProductIds={savedProductIds}
+              watchlistProductIds={watchlistProductIds}
               isLoading={isGridLoading}
               isAdmin={isAdmin}
               onOpenDetail={handleOpenDetail}
               onTrackClick={handleTrackClick}
               onToggleSave={handleToggleSave}
+              onToggleWatchlist={handleToggleWatchlist}
+              onFindSimilar={handleFindSimilar}
+              onOpenEmbed={(prod, e) => handleOpenEmbed({ product: prod }, e)}
               onSaveToBoard={handleSaveToBoard}
               onCreateAndSaveBoard={handleCreateAndSaveBoard}
               onResetFilters={handleResetFilters}
@@ -537,11 +718,17 @@ export default function App() {
             boards={boards}
             allProducts={products}
             savedProductIds={savedProductIds}
+            watchlistProductIds={watchlistProductIds}
             onCreateBoard={handleCreateBoard}
             onDeleteBoard={handleDeleteBoard}
             onOpenDetail={handleOpenDetail}
             onTrackClick={handleTrackClick}
             onToggleSave={handleToggleSave}
+            onToggleWatchlist={handleToggleWatchlist}
+            onFindSimilar={handleFindSimilar}
+            onOpenEmbed={(prod, e) => handleOpenEmbed({ product: prod }, e)}
+            onExportMoodBoard={handleExportMoodBoard}
+            onEmbedBoard={(board) => handleOpenEmbed({ board })}
             onSaveToBoard={handleSaveToBoard}
             onCreateAndSaveBoard={handleCreateAndSaveBoard}
             onExploreMore={() => setActiveTab('discover')}
@@ -585,6 +772,7 @@ export default function App() {
           currentProductList={filteredProducts}
           boards={boards}
           isSaved={savedProductIds.includes(selectedProduct.id)}
+          isWatchlisted={watchlistProductIds.includes(selectedProduct.id)}
           onClose={handleCloseDetail}
           onSelectProduct={(p) => {
             setSelectedProduct(p);
@@ -592,6 +780,9 @@ export default function App() {
           }}
           onTrackClick={handleTrackClick}
           onToggleSave={handleToggleSave}
+          onToggleWatchlist={handleToggleWatchlist}
+          onFindSimilar={handleFindSimilar}
+          onOpenEmbed={(prod) => handleOpenEmbed({ product: prod })}
           onSaveToBoard={handleSaveToBoard}
           onCreateAndSaveBoard={handleCreateAndSaveBoard}
           onSelectTag={(tag) => {
@@ -617,6 +808,52 @@ export default function App() {
             setActiveTab('admin');
           }
         }}
+        onShowToast={showToast}
+      />
+
+      {/* Price Drop Watchlist Alert Modal */}
+      <PriceWatchlistModal
+        isOpen={showWatchlistModal}
+        onClose={() => setShowWatchlistModal(false)}
+        products={products}
+        watchlist={watchlist}
+        onRemoveFromWatchlist={handleRemoveFromWatchlist}
+        onUpdateWatchlistTarget={handleUpdateWatchlistTarget}
+        onOpenProduct={(prod) => {
+          setShowWatchlistModal(false);
+          handleOpenDetail(prod);
+        }}
+        onShowToast={showToast}
+      />
+
+      {/* Find Visually Similar Products Modal (AI / Aesthetic Lens) */}
+      <FindSimilarModal
+        isOpen={Boolean(similarSourceProduct)}
+        onClose={() => setSimilarSourceProduct(null)}
+        sourceProduct={similarSourceProduct}
+        onOpenProduct={(prod) => {
+          setSimilarSourceProduct(null);
+          handleOpenDetail(prod);
+        }}
+        onSavePin={(id, e) => handleToggleSave(id)}
+        isProductSaved={(id) => savedProductIds.includes(id)}
+      />
+
+      {/* Embed Pin / Board Widget Modal */}
+      <EmbedPinModal
+        isOpen={Boolean(embedTarget)}
+        onClose={() => setEmbedTarget(null)}
+        product={embedTarget?.product}
+        board={embedTarget?.board}
+        onShowToast={showToast}
+      />
+
+      {/* Mood Board High-Res Export & PDF Modal */}
+      <MoodBoardExportModal
+        isOpen={Boolean(exportBoardTarget)}
+        onClose={() => setExportBoardTarget(null)}
+        board={exportBoardTarget}
+        products={products}
         onShowToast={showToast}
       />
 

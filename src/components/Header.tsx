@@ -3,7 +3,8 @@ import { ActiveTab, FilterState, User, Product } from '../types';
 import { 
   Search, Compass, FolderHeart, ShieldCheck, 
   X, Pin, LogOut, Lock, LogIn, ChevronDown,
-  Zap, Clock, ArrowRight, Sparkles, Tag, ShoppingBag
+  Zap, Clock, ArrowRight, Sparkles, Tag, ShoppingBag,
+  Bell, BookOpen
 } from 'lucide-react';
 import { searchIndex, SearchSuggestions } from '../services/searchIndex';
 import { 
@@ -17,6 +18,9 @@ interface HeaderProps {
   filterState: FilterState;
   onUpdateFilter: (updates: Partial<FilterState>) => void;
   savedCount: number;
+  watchlistCount?: number;
+  onOpenWatchlist?: () => void;
+  onOpenLookbooks?: () => void;
   currentUser: User | null;
   onOpenAuthModal: (mode?: 'login' | 'admin-login' | 'register') => void;
   onLogout: () => void;
@@ -39,6 +43,9 @@ export const Header: React.FC<HeaderProps> = ({
   filterState,
   onUpdateFilter,
   savedCount,
+  watchlistCount = 0,
+  onOpenWatchlist,
+  onOpenLookbooks,
   currentUser,
   onOpenAuthModal,
   onLogout,
@@ -432,7 +439,7 @@ export const Header: React.FC<HeaderProps> = ({
               <button
                 id="nav-tab-discover"
                 onClick={() => setActiveTab('discover')}
-                className={`px-4 py-2 rounded-full text-xs font-bold transition-all flex items-center gap-1.5 ${
+                className={`px-4 py-2 rounded-full text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
                   activeTab === 'discover'
                     ? 'bg-slate-900 text-white shadow-xs'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
@@ -442,10 +449,22 @@ export const Header: React.FC<HeaderProps> = ({
                 <span>Discover</span>
               </button>
 
+              {onOpenLookbooks && (
+                <button
+                  id="nav-lookbooks-btn"
+                  onClick={onOpenLookbooks}
+                  className="px-3 py-2 rounded-full text-xs font-bold transition-all flex items-center gap-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 cursor-pointer"
+                  title="Browse Curated Editorial Lookbooks"
+                >
+                  <BookOpen className="w-3.5 h-3.5 text-purple-600" />
+                  <span>Lookbooks</span>
+                </button>
+              )}
+
               <button
                 id="nav-tab-boards"
                 onClick={() => setActiveTab('boards')}
-                className={`px-4 py-2 rounded-full text-xs font-bold transition-all flex items-center gap-1.5 relative ${
+                className={`px-4 py-2 rounded-full text-xs font-bold transition-all flex items-center gap-1.5 relative cursor-pointer ${
                   activeTab === 'boards'
                     ? 'bg-slate-900 text-white shadow-xs'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
@@ -459,6 +478,23 @@ export const Header: React.FC<HeaderProps> = ({
                   </span>
                 )}
               </button>
+
+              {onOpenWatchlist && (
+                <button
+                  id="nav-watchlist-btn"
+                  onClick={onOpenWatchlist}
+                  className="px-3 py-2 rounded-full text-xs font-bold transition-all flex items-center gap-1.5 relative text-slate-600 hover:text-slate-900 hover:bg-slate-100 cursor-pointer"
+                  title="Price Drop Watchlist"
+                >
+                  <Bell className="w-3.5 h-3.5 text-amber-500" />
+                  <span className="hidden lg:inline">Watchlist</span>
+                  {(watchlistCount || 0) > 0 && (
+                    <span className="ml-0.5 px-1.5 py-0.2 rounded-full text-[10px] font-extrabold bg-amber-500 text-white animate-pulse">
+                      {watchlistCount}
+                    </span>
+                  )}
+                </button>
+              )}
             </nav>
 
             {/* Admin Console Entry (Visible ONLY to verified Administrators) */}

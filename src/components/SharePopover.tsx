@@ -4,6 +4,7 @@ import {
   X, Copy, Check, Share2, Send, 
   ExternalLink, Globe 
 } from 'lucide-react';
+import { formatPrice } from '../utils/formatters';
 
 interface SharePopoverProps {
   product: Product;
@@ -131,7 +132,7 @@ export const SharePopover: React.FC<SharePopoverProps> = ({
           <div className="min-w-0 flex-1">
             <h4 className="text-xs font-bold text-slate-900 truncate">{product.name}</h4>
             <div className="flex items-center gap-2 text-[11px] text-slate-500 mt-0.5">
-              <span className="font-semibold text-rose-600">{product.currency || '$'}{product.price}</span>
+              <span className="font-semibold text-rose-600">{formatPrice(product.price, product.currency)}</span>
               <span>•</span>
               <span>{product.retailer}</span>
             </div>

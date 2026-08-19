@@ -8,6 +8,82 @@ const STORAGE_KEYS = {
   USER_SAVED: 'pinfind_user_saved_ids_clean',
   FILTERS: 'pinfind_filters_clean',
   RECENT_SEARCHES: 'pinfind_recent_searches',
+  WATCHLIST: 'pinfind_price_watchlist',
+  VISITOR_ID: 'pinfind_visitor_tracker_id',
+};
+
+export const getOrCreateVisitorId = (): string => {
+  try {
+    let vid = localStorage.getItem(STORAGE_KEYS.VISITOR_ID);
+    if (!vid) {
+      vid = `v_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 9)}`;
+      localStorage.setItem(STORAGE_KEYS.VISITOR_ID, vid);
+    }
+    return vid;
+  } catch {
+    return `v_anon_${Math.random().toString(36).substring(2, 9)}`;
+  }
+};
+
+export const getClientDeviceType = (): 'desktop' | 'mobile' | 'tablet' => {
+  if (typeof window === 'undefined') return 'desktop';
+  const width = window.innerWidth;
+  if (width < 640) return 'mobile';
+  if (width < 1024) return 'tablet';
+  return 'desktop';
+};
+
+export const getStoredWatchlist = (): import('../types').WatchlistProduct[] => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.WATCHLIST);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+export const saveStoredWatchlist = (items: import('../types').WatchlistProduct[]): void => {
+  try {
+    localStorage.setItem(STORAGE_KEYS.WATCHLIST, JSON.stringify(items));
+  } catch (e) {
+    console.error('Failed to save price watchlist to localStorage', e);
+  }
+};
+
+export const toggleWatchlistProduct = (
+  productId: string,
+  currentPrice: number = 0,
+  targetPrice?: number,
+  notifyEmail?: string
+): { isAdded: boolean; watchlist: import('../types').WatchlistProduct[] } => {
+  const current = getStoredWatchlist();
+  const exists = current.some(item => item.productId === productId);
+
+  let updated: import('../types').WatchlistProduct[];
+  let isAdded = false;
+
+  if (exists) {
+    updated = current.filter(item => item.productId !== productId);
+  } else {
+    isAdded = true;
+    updated = [
+      {
+        productId,
+        addedAt: new Date().toISOString(),
+        initialPrice: currentPrice,
+        targetPrice: targetPrice || Math.round(currentPrice * 0.85),
+        currency: 'INR',
+        notifyEmail,
+        isTriggered: false,
+      },
+      ...current,
+    ];
+  }
+
+  saveStoredWatchlist(updated);
+  return { isAdded, watchlist: updated };
 };
 
 export const getStoredRecentSearches = (): string[] => {

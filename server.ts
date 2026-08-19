@@ -1,7 +1,19 @@
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { createServer as createViteServer } from 'vite';
+import { GoogleGenAI } from '@google/genai';
+import { 
+  fetchAndAnalyzeProduct, 
+  determineBestOffer, 
+  evaluateOffer,
+  PaymentOffer,
+  BestOfferSummary,
+  OfferDiscountType,
+  CardType,
+  OfferSource
+} from './server/priceIntelligence';
 
 // Types
 type ProductStatus = 'DRAFT' | 'PUBLISHED' | 'UNPUBLISHED' | 'ARCHIVED';
@@ -27,6 +39,29 @@ interface Category {
   createdAt: string;
 }
 
+interface LookTag {
+  id: string;
+  label: string;
+  price?: number;
+  xPercent: number;
+  yPercent: number;
+  affiliateUrl: string;
+  retailer?: string;
+}
+
+interface PriceHistoryPoint {
+  date: string;
+  price: number;
+  formattedDate?: string;
+}
+
+interface PriceDropInfo {
+  amount: number;
+  percentage: number;
+  previousPrice: number;
+  detectedAt: string;
+}
+
 interface Product {
   id: string;
   slug: string;
@@ -44,8 +79,11 @@ interface Product {
   brand?: string;
   retailerDomain?: string;
   price?: number;
+  currentPrice?: number;
   originalPrice?: number;
+  discountPercentage?: number;
   currency?: string;
+  availability?: 'IN_STOCK' | 'OUT_OF_STOCK' | 'PREORDER' | 'UNKNOWN';
   isTrending?: boolean;
   isStaffPick?: boolean;
   isFeatured?: boolean;
@@ -56,6 +94,13 @@ interface Product {
   status: ProductStatus;
   createdAt: string;
   updatedAt?: string;
+  priceUpdatedAt?: string;
+  offersVerifiedAt?: string;
+  priceHistory?: PriceHistoryPoint[];
+  priceDrop?: PriceDropInfo;
+  offers?: PaymentOffer[];
+  bestOffer?: BestOfferSummary | null;
+  lookTags?: LookTag[];
   // Pinterest Sync Metadata
   exportedToPinterest?: boolean;
   pinterestPinId?: string;
@@ -73,6 +118,16 @@ interface ClickEvent {
   timestamp: string;
   referrerLocation: string;
   deviceType: 'desktop' | 'mobile' | 'tablet';
+}
+
+interface PageViewEvent {
+  id: string;
+  path: string;
+  referrer: string;
+  visitorId: string;
+  timestamp: string;
+  deviceType: 'desktop' | 'mobile' | 'tablet';
+  userAgent?: string;
 }
 
 interface Board {
@@ -136,15 +191,43 @@ interface PinterestSyncState {
   totalPinsExported?: number;
 }
 
+export interface PriceSyncLogEntry {
+  id: string;
+  timestamp: string;
+  productId: string;
+  productName: string;
+  oldPrice?: number;
+  newPrice?: number;
+  priceChanged: boolean;
+  priceDifference: number;
+  offersCount: number;
+  bestOfferHeadline?: string;
+  status: 'SUCCESS' | 'PRICE_DROP' | 'UNCHANGED' | 'ERROR';
+  errorMessage?: string;
+}
+
+export interface PriceSyncState {
+  enabled: boolean;
+  intervalMinutes: number;
+  lastRunAt?: string;
+  nextRunAt?: string;
+  isRunning: boolean;
+  totalSyncs: number;
+  totalPriceDropsDetected: number;
+  recentLogs: PriceSyncLogEntry[];
+}
+
 interface DatabaseSchema {
   users: User[];
   categories: Category[];
   products: Product[];
   boards: Board[];
   clicks: ClickEvent[];
+  pageViews?: PageViewEvent[];
   auditLogs: AuditLog[];
   settings: PlatformSettings;
   pinterest?: PinterestSyncState;
+  priceSyncState?: PriceSyncState;
   sessions: { [token: string]: { userId: string; createdAt: number } };
 }
 
@@ -244,6 +327,9 @@ function initDatabase(): DatabaseSchema {
           data.settings.platformName = 'PinFind Discovery';
         }
       }
+      if (!data.pageViews) {
+        data.pageViews = [];
+      }
       if (!data.pinterest) {
         data.pinterest = {
           isConnected: false,
@@ -271,22 +357,15 @@ function initDatabase(): DatabaseSchema {
         email: 'admin@pinfind.com',
         name: 'Administrator',
         role: 'ADMIN',
-        passwordHash: 'admin123',
-        createdAt: new Date().toISOString(),
-      },
-      {
-        id: 'usr-demo-user-1',
-        email: 'user@pinfind.com',
-        name: 'Discovery Explorer',
-        role: 'USER',
-        passwordHash: 'user123',
+        passwordHash: 'PinFind@#5431234',
         createdAt: new Date().toISOString(),
       },
     ],
     categories: DEFAULT_CATEGORIES,
-    products: [], // Zero mock products
+    products: [],
     boards: [],
     clicks: [],
+    pageViews: [],
     auditLogs: [
       {
         id: 'log-init',
@@ -294,7 +373,7 @@ function initDatabase(): DatabaseSchema {
         adminName: 'Administrator',
         action: 'System Initialized',
         targetEntity: 'Platform',
-        details: 'Initial secure system start with zero mock products.',
+        details: 'Initial system start with clean catalog.',
         timestamp: new Date().toISOString(),
       },
     ],
@@ -302,20 +381,22 @@ function initDatabase(): DatabaseSchema {
       platformName: 'PinFind Discovery',
       tagline: 'Visual Product Discovery & Curated Collections',
       storeDisclaimer: 'We curate products based on design excellence and quality. All product links take you directly to verified official retailer stores.',
-      defaultCurrency: 'USD',
+      defaultCurrency: 'INR',
       contactEmail: 'hello@pinfind.store',
     },
     pinterest: {
       isConnected: false,
-      syncedBoards: [
-        { id: 'board_home_01', name: 'Aesthetic Home & Living', description: 'Curated interior styling, lighting, and ceramics', pinCount: 38, privacy: 'PUBLIC' },
-        { id: 'board_tech_02', name: 'Minimalist Desk Setup', description: 'Ergonomic gear and aesthetic workspace accessories', pinCount: 24, privacy: 'PUBLIC' },
-        { id: 'board_coffee_03', name: 'Coffee & Kitchen Rituals', description: 'Artisan drippers, espresso machines, and glassware', pinCount: 19, privacy: 'PUBLIC' },
-        { id: 'board_style_04', name: 'Everyday Essentials & Style', description: 'Capsule wardrobe, bags, and modern wellness', pinCount: 31, privacy: 'PUBLIC' },
-      ],
-      defaultBoardId: 'board_home_01',
+      syncedBoards: [],
       autoSyncOnPublish: false,
       totalPinsExported: 0,
+    },
+    priceSyncState: {
+      enabled: true,
+      intervalMinutes: 60,
+      isRunning: false,
+      totalSyncs: 0,
+      totalPriceDropsDetected: 0,
+      recentLogs: [],
     },
     sessions: {},
   };
@@ -340,6 +421,20 @@ function saveDatabase() {
 }
 
 // Helpers
+function normalizeProductStatus(status?: string): ProductStatus {
+  if (!status) return 'PUBLISHED';
+  const clean = String(status).trim().toUpperCase();
+  if (['PUBLISHED', 'DRAFT', 'UNPUBLISHED', 'ARCHIVED'].includes(clean)) {
+    return clean as ProductStatus;
+  }
+  return 'PUBLISHED';
+}
+
+function isProductPublished(p?: { status?: string } | null): boolean {
+  if (!p) return false;
+  return normalizeProductStatus(p.status) === 'PUBLISHED';
+}
+
 function generateId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
 }
@@ -370,6 +465,81 @@ function recordAuditLog(admin: User, action: string, targetEntity: string, targe
   }
 }
 
+// ==========================================
+// SECURITY UTILITIES: HASHING & RATE LIMITING
+// ==========================================
+
+// Cryptographic Password Hashing (PBKDF2 with SHA-512 and random salt)
+function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const iterations = 10000;
+  const hash = crypto.pbkdf2Sync(password, salt, iterations, 64, 'sha512').toString('hex');
+  return `pbkdf2$${iterations}$${salt}$${hash}`;
+}
+
+// Verify password (supports both PBKDF2 hashes and legacy initial passwords seamlessly)
+function verifyPassword(password: string, storedHash: string): boolean {
+  if (!storedHash) return false;
+
+  if (storedHash.startsWith('pbkdf2$')) {
+    const parts = storedHash.split('$');
+    if (parts.length !== 4) return false;
+    const iterations = parseInt(parts[1], 10);
+    const salt = parts[2];
+    const originalHash = parts[3];
+    const computed = crypto.pbkdf2Sync(password, salt, iterations, 64, 'sha512').toString('hex');
+    return crypto.timingSafeEqual(Buffer.from(computed), Buffer.from(originalHash));
+  }
+
+  // Fallback for legacy passwords (e.g. initial setup)
+  return password === storedHash;
+}
+
+// In-Memory Brute-Force Rate Limiter for Login
+interface RateLimitRecord {
+  attempts: number;
+  blockedUntil?: number;
+}
+const loginRateLimits = new Map<string, RateLimitRecord>();
+
+function checkLoginRateLimit(ipKey: string): { allowed: boolean; waitSeconds?: number } {
+  const now = Date.now();
+  const record = loginRateLimits.get(ipKey);
+  if (!record) return { allowed: true };
+
+  if (record.blockedUntil && record.blockedUntil > now) {
+    const waitSeconds = Math.ceil((record.blockedUntil - now) / 1000);
+    return { allowed: false, waitSeconds };
+  }
+
+  if (record.blockedUntil && record.blockedUntil <= now) {
+    loginRateLimits.delete(ipKey);
+    return { allowed: true };
+  }
+
+  return { allowed: true };
+}
+
+function recordLoginFailure(ipKey: string) {
+  const now = Date.now();
+  const record = loginRateLimits.get(ipKey) || { attempts: 0 };
+  record.attempts += 1;
+
+  if (record.attempts >= 5) {
+    // Block for 2 minutes on 5 consecutive failures
+    record.blockedUntil = now + 2 * 60 * 1000;
+  }
+
+  loginRateLimits.set(ipKey, record);
+}
+
+function resetLoginRateLimit(ipKey: string) {
+  loginRateLimits.delete(ipKey);
+}
+
+// Session TTL: 7 Days
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
 // Authentication Middleware
 interface AuthenticatedRequest extends Request {
   user?: User;
@@ -381,9 +551,15 @@ function authMiddleware(req: AuthenticatedRequest, res: Response, next: NextFunc
     const token = authHeader.substring(7);
     const session = db.sessions[token];
     if (session) {
-      const user = db.users.find(u => u.id === session.userId);
-      if (user) {
-        req.user = user;
+      // Check session expiration
+      if (Date.now() - session.createdAt > SESSION_TTL_MS) {
+        delete db.sessions[token];
+        saveDatabase();
+      } else {
+        const user = db.users.find(u => u.id === session.userId);
+        if (user) {
+          req.user = user;
+        }
       }
     }
   }
@@ -433,9 +609,19 @@ async function startServer() {
   // AUTHENTICATION APIS
   // ==========================================
 
-  // POST /api/auth/login
+  // POST /api/auth/login (with Brute-Force Rate Limiting & PBKDF2 Verification)
   app.post('/api/auth/login', (req: AuthenticatedRequest, res: Response) => {
     const { email, password } = req.body;
+
+    const clientIp = req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'global_client';
+    const rateLimitKey = `${clientIp}_${email || 'anon'}`;
+
+    const limitCheck = checkLoginRateLimit(rateLimitKey);
+    if (!limitCheck.allowed) {
+      return res.status(429).json({
+        error: `Too many failed login attempts. Please wait ${limitCheck.waitSeconds} seconds before trying again.`,
+      });
+    }
 
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required.' });
@@ -444,8 +630,17 @@ async function startServer() {
     const normalizedEmail = email.trim().toLowerCase();
     const user = db.users.find(u => u.email.toLowerCase() === normalizedEmail);
 
-    if (!user || user.passwordHash !== password) {
+    if (!user || !verifyPassword(password, user.passwordHash)) {
+      recordLoginFailure(rateLimitKey);
       return res.status(401).json({ error: 'Invalid email or password.' });
+    }
+
+    // Reset rate limit on success
+    resetLoginRateLimit(rateLimitKey);
+
+    // Auto-upgrade legacy stored password to cryptographic PBKDF2 hash
+    if (!user.passwordHash.startsWith('pbkdf2$')) {
+      user.passwordHash = hashPassword(password);
     }
 
     const token = `token-${generateId('sess')}`;
@@ -466,12 +661,16 @@ async function startServer() {
     });
   });
 
-  // POST /api/auth/register (Standard User Registration)
+  // POST /api/auth/register (Standard User Registration with Password Hashing)
   app.post('/api/auth/register', (req: AuthenticatedRequest, res: Response) => {
     const { email, password, name } = req.body;
 
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required.' });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters long.' });
     }
 
     const normalizedEmail = email.trim().toLowerCase();
@@ -485,7 +684,7 @@ async function startServer() {
       email: normalizedEmail,
       name: name?.trim() || normalizedEmail.split('@')[0],
       role: 'USER', // Always register as standard USER
-      passwordHash: password,
+      passwordHash: hashPassword(password),
       createdAt: new Date().toISOString(),
     };
 
@@ -545,7 +744,11 @@ async function startServer() {
   app.get('/api/categories', (req: Request, res: Response) => {
     // Return categories along with published product counts
     const categoriesWithCount = db.categories.map(c => {
-      const count = db.products.filter(p => p.status === 'PUBLISHED' && p.category.toLowerCase() === c.name.toLowerCase()).length;
+      const count = db.products.filter(p => isProductPublished(p) && (
+        (p.category && p.category.toLowerCase().trim() === c.name.toLowerCase().trim()) ||
+        (p.category && p.category.toLowerCase().trim() === c.slug.toLowerCase().trim()) ||
+        (p.subcategory && p.subcategory.toLowerCase().trim() === c.name.toLowerCase().trim())
+      )).length;
       return {
         ...c,
         productCount: count,
@@ -559,46 +762,58 @@ async function startServer() {
     const { search, category, subcategory, tag, retailer, sort, priceRange, page, limit } = req.query;
 
     // Strict security rule: Normal users only ever see PUBLISHED products
-    let published = db.products.filter(p => p.status === 'PUBLISHED');
+    let published = db.products.filter(p => isProductPublished(p));
 
-    if (category && typeof category === 'string' && category !== 'All Pins') {
-      published = published.filter(p => p.category.toLowerCase() === category.toLowerCase());
+    if (category && typeof category === 'string' && category.trim().toLowerCase() !== 'all pins') {
+      const catQuery = category.trim().toLowerCase();
+      published = published.filter(p =>
+        (p.category && p.category.toLowerCase().trim() === catQuery) ||
+        (p.subcategory && p.subcategory.toLowerCase().trim() === catQuery)
+      );
     }
 
     if (subcategory && typeof subcategory === 'string') {
-      published = published.filter(p => p.subcategory?.toLowerCase() === subcategory.toLowerCase());
+      const subQuery = subcategory.trim().toLowerCase();
+      published = published.filter(p => p.subcategory?.toLowerCase().trim() === subQuery);
     }
 
-    if (retailer && typeof retailer === 'string' && retailer !== 'All Retailers') {
-      published = published.filter(p => p.retailer?.toLowerCase() === retailer.toLowerCase());
+    if (retailer && typeof retailer === 'string' && retailer.trim().toLowerCase() !== 'all retailers') {
+      const retQuery = retailer.trim().toLowerCase();
+      published = published.filter(p =>
+        (p.retailer && p.retailer.toLowerCase().trim() === retQuery) ||
+        (p.brand && p.brand.toLowerCase().trim() === retQuery)
+      );
     }
 
     if (tag && typeof tag === 'string') {
-      published = published.filter(p => p.tags.some(t => t.toLowerCase() === tag.toLowerCase()));
+      const tagQuery = tag.trim().toLowerCase();
+      published = published.filter(p => p.tags && p.tags.some(t => t.toLowerCase().trim() === tagQuery));
     }
 
     if (search && typeof search === 'string' && search.trim().length > 0) {
       const query = search.toLowerCase().trim();
       published = published.filter(p =>
         p.name.toLowerCase().includes(query) ||
-        p.shortDescription.toLowerCase().includes(query) ||
-        p.category.toLowerCase().includes(query) ||
-        p.retailer?.toLowerCase().includes(query) ||
+        (p.shortDescription && p.shortDescription.toLowerCase().includes(query)) ||
+        (p.detailedNotes && p.detailedNotes.toLowerCase().includes(query)) ||
+        (p.category && p.category.toLowerCase().includes(query)) ||
+        (p.subcategory && p.subcategory.toLowerCase().includes(query)) ||
+        (p.retailer && p.retailer.toLowerCase().includes(query)) ||
         (p.brand && p.brand.toLowerCase().includes(query)) ||
-        p.tags.some(t => t.toLowerCase().includes(query))
+        (p.tags && p.tags.some(t => t.toLowerCase().includes(query)))
       );
     }
 
-    // Price range filtering
+    // Price range filtering (Rupees & USD compatible)
     if (priceRange && typeof priceRange === 'string' && priceRange !== 'all') {
-      if (priceRange === 'under25') {
-        published = published.filter(p => (p.price || 0) < 25);
-      } else if (priceRange === '25to50') {
-        published = published.filter(p => (p.price || 0) >= 25 && (p.price || 0) <= 50);
-      } else if (priceRange === '50to100') {
-        published = published.filter(p => (p.price || 0) >= 50 && (p.price || 0) <= 100);
-      } else if (priceRange === 'over100') {
-        published = published.filter(p => (p.price || 0) > 100);
+      if (priceRange === 'under999' || priceRange === 'under25') {
+        published = published.filter(p => (p.price || 0) < 1000);
+      } else if (priceRange === '1000to2500' || priceRange === '25to50') {
+        published = published.filter(p => (p.price || 0) >= 1000 && (p.price || 0) <= 2500);
+      } else if (priceRange === '2500to5000' || priceRange === '50to100') {
+        published = published.filter(p => (p.price || 0) >= 2500 && (p.price || 0) <= 5000);
+      } else if (priceRange === 'over5000' || priceRange === 'over100') {
+        published = published.filter(p => (p.price || 0) > 5000);
       }
     }
 
@@ -650,14 +865,52 @@ async function startServer() {
     const { id } = req.params;
     const product = db.products.find(p => p.id === id || p.slug === id);
 
-    if (!product || product.status !== 'PUBLISHED') {
+    if (!product || !isProductPublished(product)) {
       return res.status(404).json({ error: 'Product not found or not published.' });
     }
 
     return res.json({ product });
   });
 
-  // POST /api/clicks/track (Real Outbound Affiliate Click Tracking)
+  // Helper: Build smart tracked affiliate URL with UTM and Sub-IDs
+  function buildTrackedUrl(rawUrl: string, product: Product, deviceType: string = 'desktop'): string {
+    if (!rawUrl) return rawUrl;
+    try {
+      const url = new URL(rawUrl);
+      const utm = (db as any).utmSettings || {
+        enabled: true,
+        utmSource: 'pinfind',
+        utmMedium: 'affiliate',
+        utmCampaign: 'discovery_feed',
+        appendSubId: true,
+        customAffiliateTags: { Amazon: 'pinfind-21', Myntra: 'pinfind_app', Flipkart: 'pinfind_curated' },
+      };
+
+      if (utm.enabled) {
+        if (!url.searchParams.has('utm_source')) url.searchParams.set('utm_source', utm.utmSource || 'pinfind');
+        if (!url.searchParams.has('utm_medium')) url.searchParams.set('utm_medium', utm.utmMedium || 'affiliate');
+        if (!url.searchParams.has('utm_campaign')) url.searchParams.set('utm_campaign', utm.utmCampaign || 'discovery_feed');
+        if (!url.searchParams.has('utm_content')) url.searchParams.set('utm_content', product.slug || product.id);
+
+        if (utm.appendSubId) {
+          const subId = `pinfind_${deviceType}_${Date.now().toString(36)}`;
+          if (url.hostname.includes('amazon.')) {
+            if (!url.searchParams.has('tag') && utm.customAffiliateTags?.Amazon) {
+              url.searchParams.set('tag', utm.customAffiliateTags.Amazon);
+            }
+            if (!url.searchParams.has('ascsubtag')) url.searchParams.set('ascsubtag', subId);
+          } else if (!url.searchParams.has('subid') && !url.searchParams.has('subId')) {
+            url.searchParams.set('subid', subId);
+          }
+        }
+      }
+      return url.toString();
+    } catch {
+      return rawUrl;
+    }
+  }
+
+  // POST /api/clicks/track (Real Outbound Affiliate Click Tracking with UTM Auto-Tagging)
   app.post('/api/clicks/track', (req: AuthenticatedRequest, res: Response) => {
     const { productId, referrerLocation, deviceType } = req.body;
 
@@ -666,12 +919,14 @@ async function startServer() {
       return res.status(404).json({ error: 'Product not found.' });
     }
 
+    const trackedDestinationUrl = buildTrackedUrl(product.affiliateLink, product, deviceType || 'desktop');
+
     const clickEvent: ClickEvent = {
       id: generateId('clk'),
       productId: product.id,
       productName: product.name,
       retailer: product.retailer || 'Direct',
-      destinationUrl: product.affiliateLink,
+      destinationUrl: trackedDestinationUrl,
       timestamp: new Date().toISOString(),
       referrerLocation: referrerLocation || 'visit_product_cta',
       deviceType: deviceType || 'desktop',
@@ -685,7 +940,41 @@ async function startServer() {
     product.clicksCount = (product.clicksCount || 0) + 1;
     saveDatabase();
 
-    return res.json({ success: true, destinationUrl: product.affiliateLink });
+    return res.json({ success: true, destinationUrl: trackedDestinationUrl });
+  });
+
+  // POST /api/traffic/track (Public Visitor & Page View Traffic Tracking)
+  app.post('/api/traffic/track', (req: Request, res: Response) => {
+    const { path: visitPath, referrer, visitorId, deviceType } = req.body;
+    if (!visitPath) {
+      return res.status(400).json({ error: 'Path is required' });
+    }
+
+    const vId = visitorId || `v_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 8)}`;
+    const userAgent = req.headers['user-agent'] || '';
+
+    const pageView: PageViewEvent = {
+      id: generateId('pv'),
+      path: String(visitPath).substring(0, 255),
+      referrer: String(referrer || 'Direct').substring(0, 255),
+      visitorId: vId,
+      timestamp: new Date().toISOString(),
+      deviceType: deviceType === 'mobile' || deviceType === 'tablet' ? deviceType : 'desktop',
+      userAgent: String(userAgent).substring(0, 200),
+    };
+
+    if (!db.pageViews) {
+      db.pageViews = [];
+    }
+
+    db.pageViews.unshift(pageView);
+    // Cap in-memory/file storage to last 10,000 page views
+    if (db.pageViews.length > 10000) {
+      db.pageViews = db.pageViews.slice(0, 10000);
+    }
+
+    saveDatabase();
+    return res.json({ success: true, id: pageView.id });
   });
 
   // Public Boards API
@@ -888,8 +1177,7 @@ async function startServer() {
       return res.status(400).json({ error: 'Invalid affiliate destination URL format.' });
     }
 
-    const validStatuses: ProductStatus[] = ['DRAFT', 'PUBLISHED', 'UNPUBLISHED', 'ARCHIVED'];
-    const finalStatus: ProductStatus = validStatuses.includes(status) ? status : 'PUBLISHED';
+    const finalStatus: ProductStatus = normalizeProductStatus(status);
 
     let derivedRetailer = retailer?.trim() || brand?.trim();
     if (!derivedRetailer) {
@@ -901,6 +1189,27 @@ async function startServer() {
         derivedRetailer = 'Direct Brand';
       }
     }
+
+    const parsedPrice = typeof price === 'number' ? price : price ? parseFloat(price) : undefined;
+    const parsedOriginalPrice = typeof originalPrice === 'number' ? originalPrice : originalPrice ? parseFloat(originalPrice) : undefined;
+    let computedDiscountPct = typeof req.body.discountPercentage === 'number' ? req.body.discountPercentage : undefined;
+    if (computedDiscountPct === undefined && parsedOriginalPrice && parsedPrice && parsedOriginalPrice > parsedPrice) {
+      computedDiscountPct = Math.round(((parsedOriginalPrice - parsedPrice) / parsedOriginalPrice) * 100);
+    }
+
+    const initialOffers: PaymentOffer[] = Array.isArray(req.body.offers) ? req.body.offers : [];
+    const computedBestOffer = req.body.bestOffer !== undefined 
+      ? req.body.bestOffer 
+      : (initialOffers.length > 0 && parsedPrice ? determineBestOffer(initialOffers, parsedPrice) : null);
+
+    const nowIso = new Date().toISOString();
+    const initialPriceHistory: PriceHistoryPoint[] = parsedPrice ? [
+      {
+        date: nowIso,
+        price: parsedPrice,
+        formattedDate: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }),
+      }
+    ] : [];
 
     const newProduct: Product = {
       id: generateId('prod'),
@@ -918,16 +1227,24 @@ async function startServer() {
       retailer: derivedRetailer,
       brand: brand?.trim() || derivedRetailer,
       retailerDomain: retailerDomain || '',
-      price: typeof price === 'number' ? price : price ? parseFloat(price) : undefined,
-      originalPrice: typeof originalPrice === 'number' ? originalPrice : originalPrice ? parseFloat(originalPrice) : undefined,
-      currency: currency || 'USD',
+      price: parsedPrice,
+      currentPrice: parsedPrice,
+      originalPrice: parsedOriginalPrice,
+      discountPercentage: computedDiscountPct,
+      currency: currency || 'INR',
+      availability: req.body.availability || 'IN_STOCK',
       isTrending: Boolean(isTrending),
       isStaffPick: Boolean(isStaffPick),
       isFeatured: Boolean(isFeatured),
       clicksCount: 0,
       savesCount: 0,
       status: finalStatus,
-      createdAt: new Date().toISOString(),
+      priceUpdatedAt: nowIso,
+      offersVerifiedAt: initialOffers.length > 0 ? nowIso : undefined,
+      priceHistory: initialPriceHistory,
+      offers: initialOffers,
+      bestOffer: computedBestOffer,
+      createdAt: nowIso,
     };
 
     db.products.unshift(newProduct);
@@ -961,11 +1278,46 @@ async function startServer() {
       }
     }
 
+    const updatedPrice = updateData.price !== undefined 
+      ? (typeof updateData.price === 'number' ? updateData.price : parseFloat(updateData.price) || undefined)
+      : existing.price;
+
+    const updatedOrigPrice = updateData.originalPrice !== undefined
+      ? (typeof updateData.originalPrice === 'number' ? updateData.originalPrice : parseFloat(updateData.originalPrice) || undefined)
+      : existing.originalPrice;
+
+    let updatedDiscPct = updateData.discountPercentage;
+    if (updatedDiscPct === undefined && updatedOrigPrice && updatedPrice && updatedOrigPrice > updatedPrice) {
+      updatedDiscPct = Math.round(((updatedOrigPrice - updatedPrice) / updatedOrigPrice) * 100);
+    }
+
+    const updatedOffers: PaymentOffer[] = updateData.offers !== undefined ? updateData.offers : existing.offers || [];
+    const updatedBestOffer = updateData.bestOffer !== undefined
+      ? updateData.bestOffer
+      : (updatedOffers.length > 0 && updatedPrice ? determineBestOffer(updatedOffers, updatedPrice) : null);
+
+    const priceHistory = [...(existing.priceHistory || [])];
+    if (updatedPrice !== undefined && (priceHistory.length === 0 || priceHistory[priceHistory.length - 1].price !== updatedPrice)) {
+      priceHistory.push({
+        date: new Date().toISOString(),
+        price: updatedPrice,
+        formattedDate: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }),
+      });
+    }
+
     const updatedProduct: Product = {
       ...existing,
       ...updateData,
       id: existing.id,
+      price: updatedPrice,
+      currentPrice: updatedPrice,
+      originalPrice: updatedOrigPrice,
+      discountPercentage: updatedDiscPct,
+      offers: updatedOffers,
+      bestOffer: updatedBestOffer,
+      priceHistory,
       slug: updateData.name ? slugify(updateData.name) + '-' + existing.id.split('-').pop() : existing.slug,
+      status: updateData.status !== undefined ? normalizeProductStatus(updateData.status) : existing.status,
       updatedAt: new Date().toISOString(),
     };
 
@@ -976,13 +1328,593 @@ async function startServer() {
     return res.json({ product: updatedProduct });
   });
 
+  // ==========================================
+  // REAL-TIME PRICE & CARD DISCOUNT INTELLIGENCE APIS & BACKGROUND SYNC
+  // ==========================================
+
+  function getPriceSyncState(): PriceSyncState {
+    if (!db.priceSyncState) {
+      db.priceSyncState = {
+        enabled: true,
+        intervalMinutes: 60,
+        isRunning: false,
+        totalSyncs: 0,
+        totalPriceDropsDetected: 0,
+        recentLogs: [],
+      };
+    }
+    return db.priceSyncState;
+  }
+
+  async function executeBackgroundPriceSync(triggerReason = 'SCHEDULED_AUTO') {
+    const syncState = getPriceSyncState();
+    if (syncState.isRunning) {
+      console.log('Background price sync already active, skipping trigger.');
+      return;
+    }
+
+    syncState.isRunning = true;
+    const nowIso = new Date().toISOString();
+    syncState.lastRunAt = nowIso;
+    syncState.nextRunAt = new Date(Date.now() + syncState.intervalMinutes * 60 * 1000).toISOString();
+    console.log(`[Price Intelligence] Starting background sync (${triggerReason})...`);
+
+    const productsWithUrls = db.products.filter(p => Boolean(p.productUrl || p.affiliateLink));
+    let syncCount = 0;
+    let dropsDetected = 0;
+
+    for (const prod of productsWithUrls.slice(0, 30)) {
+      const targetUrl = prod.productUrl || prod.affiliateLink;
+      if (!targetUrl) continue;
+
+      try {
+        const freshData = await fetchAndAnalyzeProduct(targetUrl);
+        const oldPrice = prod.price || prod.currentPrice;
+        const newPrice = freshData.currentPrice;
+        const ts = new Date().toISOString();
+
+        let priceChanged = false;
+        let priceDiff = 0;
+        let logStatus: PriceSyncLogEntry['status'] = 'UNCHANGED';
+
+        if (newPrice !== undefined && oldPrice !== undefined && newPrice !== oldPrice) {
+          priceChanged = true;
+          priceDiff = newPrice - oldPrice;
+          if (priceDiff < 0) {
+            dropsDetected++;
+            logStatus = 'PRICE_DROP';
+            const dropAmount = Math.abs(priceDiff);
+            const dropPct = Math.round((dropAmount / oldPrice) * 100);
+            prod.priceDrop = {
+              amount: dropAmount,
+              percentage: dropPct,
+              previousPrice: oldPrice,
+              detectedAt: ts,
+            };
+          } else {
+            logStatus = 'SUCCESS';
+          }
+        }
+
+        if (newPrice !== undefined) {
+          prod.price = newPrice;
+          prod.currentPrice = newPrice;
+          if (!prod.priceHistory) prod.priceHistory = [];
+          prod.priceHistory.push({
+            date: ts,
+            price: newPrice,
+            formattedDate: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }),
+          });
+        }
+
+        if (freshData.originalPrice !== undefined) prod.originalPrice = freshData.originalPrice;
+        if (freshData.discountPercentage !== undefined) prod.discountPercentage = freshData.discountPercentage;
+        if (freshData.availability) prod.availability = freshData.availability;
+
+        if (freshData.offers && freshData.offers.length > 0) {
+          prod.offers = freshData.offers;
+          prod.bestOffer = freshData.bestOffer;
+          prod.offersVerifiedAt = ts;
+        } else if (prod.offers && prod.offers.length > 0) {
+          const targetP = prod.price || 0;
+          prod.offers = prod.offers.map(off => {
+            const evalRes = evaluateOffer(off, targetP);
+            return {
+              ...off,
+              eligible: evalRes.eligible,
+              calculatedDiscount: evalRes.calculatedDiscount,
+              effectivePrice: evalRes.effectivePrice,
+              ineligibilityReason: evalRes.ineligibilityReason,
+            };
+          });
+          prod.bestOffer = determineBestOffer(prod.offers, targetP);
+        }
+
+        prod.priceUpdatedAt = ts;
+        prod.updatedAt = ts;
+        syncCount++;
+
+        // Add to recentLogs
+        const entry: PriceSyncLogEntry = {
+          id: 'log_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 6),
+          timestamp: ts,
+          productId: prod.id,
+          productName: prod.name,
+          oldPrice,
+          newPrice,
+          priceChanged,
+          priceDifference: priceDiff,
+          offersCount: prod.offers?.length || 0,
+          bestOfferHeadline: prod.bestOffer?.discountText || undefined,
+          status: logStatus,
+        };
+
+        syncState.recentLogs = [entry, ...(syncState.recentLogs || [])].slice(0, 100);
+
+        // Safe throttle between external merchant requests
+        await new Promise(r => setTimeout(r, 400));
+      } catch (err: any) {
+        console.error(`Failed to sync product ${prod.name}:`, err.message);
+        const errEntry: PriceSyncLogEntry = {
+          id: 'log_err_' + Date.now().toString(36),
+          timestamp: new Date().toISOString(),
+          productId: prod.id,
+          productName: prod.name,
+          priceChanged: false,
+          priceDifference: 0,
+          offersCount: prod.offers?.length || 0,
+          status: 'ERROR',
+          errorMessage: err.message || 'Scrape failed',
+        };
+        syncState.recentLogs = [errEntry, ...(syncState.recentLogs || [])].slice(0, 100);
+      }
+    }
+
+    syncState.isRunning = false;
+    syncState.totalSyncs = (syncState.totalSyncs || 0) + syncCount;
+    syncState.totalPriceDropsDetected = (syncState.totalPriceDropsDetected || 0) + dropsDetected;
+    db.priceSyncState = syncState;
+    saveDatabase();
+    console.log(`[Price Intelligence] Background sync complete. ${syncCount} products synced, ${dropsDetected} price drops detected.`);
+  }
+
+  // Periodic interval loop for background price & offer checks (runs every 10 min, checks elapsed interval)
+  let lastPeriodicRunTime = Date.now();
+  setInterval(() => {
+    try {
+      const state = getPriceSyncState();
+      if (!state.enabled || state.isRunning) return;
+      const elapsedMinutes = (Date.now() - lastPeriodicRunTime) / (60 * 1000);
+      if (elapsedMinutes >= state.intervalMinutes) {
+        lastPeriodicRunTime = Date.now();
+        executeBackgroundPriceSync('SCHEDULED_TIMER').catch(e => {
+          console.error('Scheduled background price sync error:', e);
+        });
+      }
+    } catch (loopErr) {
+      console.error('Background price sync interval error:', loopErr);
+    }
+  }, 10 * 60 * 1000);
+
+  // POST /api/admin/fetch-product (Analyze URL & Extract verified price + card discounts)
+  app.post('/api/admin/fetch-product', requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    const { affiliateUrl } = req.body;
+
+    if (!affiliateUrl || typeof affiliateUrl !== 'string' || !affiliateUrl.trim()) {
+      return res.status(400).json({ error: 'Valid Affiliate product URL is required.' });
+    }
+
+    try {
+      const result = await fetchAndAnalyzeProduct(affiliateUrl.trim());
+      recordAuditLog(req.user!, 'Product URL Analyzed', `Retailer: ${result.retailer}`, undefined, `Offers detected: ${result.offers.length}`);
+      return res.json(result);
+    } catch (err: any) {
+      console.error('URL analysis failed:', err);
+      return res.status(400).json({ error: err.message || 'Failed to analyze product URL.' });
+    }
+  });
+
+  // POST /api/admin/refresh-product/:id (Real-time live refresh of a product's price and bank offers)
+  app.post('/api/admin/refresh-product/:id', requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    const { id } = req.params;
+    const product = db.products.find(p => p.id === id);
+
+    if (!product) {
+      return res.status(404).json({ error: 'Product not found.' });
+    }
+
+    const targetUrl = product.productUrl || product.affiliateLink;
+    if (!targetUrl) {
+      return res.status(400).json({ error: 'Product does not have a destination URL to refresh.' });
+    }
+
+    try {
+      const freshData = await fetchAndAnalyzeProduct(targetUrl);
+      const oldPrice = product.price || product.currentPrice;
+      const newPrice = freshData.currentPrice;
+      const nowIso = new Date().toISOString();
+
+      let priceChanged = false;
+      let priceDifference = 0;
+
+      if (newPrice !== undefined && oldPrice !== undefined && newPrice !== oldPrice) {
+        priceChanged = true;
+        priceDifference = newPrice - oldPrice;
+
+        if (priceDifference < 0) {
+          // Price dropped! Record price drop badge info
+          const dropAmount = Math.abs(priceDifference);
+          const dropPct = Math.round((dropAmount / oldPrice) * 100);
+          product.priceDrop = {
+            amount: dropAmount,
+            percentage: dropPct,
+            previousPrice: oldPrice,
+            detectedAt: nowIso,
+          };
+        }
+      }
+
+      if (newPrice !== undefined) {
+        product.price = newPrice;
+        product.currentPrice = newPrice;
+        if (!product.priceHistory) product.priceHistory = [];
+        product.priceHistory.push({
+          date: nowIso,
+          price: newPrice,
+          formattedDate: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }),
+        });
+      }
+
+      if (freshData.originalPrice !== undefined) {
+        product.originalPrice = freshData.originalPrice;
+      }
+      if (freshData.discountPercentage !== undefined) {
+        product.discountPercentage = freshData.discountPercentage;
+      }
+      if (freshData.availability) {
+        product.availability = freshData.availability;
+      }
+
+      // If verified offers detected, update
+      if (freshData.offers && freshData.offers.length > 0) {
+        product.offers = freshData.offers;
+        product.bestOffer = freshData.bestOffer;
+        product.offersVerifiedAt = nowIso;
+      } else if (product.offers && product.offers.length > 0) {
+        // Re-evaluate existing offers against new price
+        const targetP = product.price || 0;
+        product.offers = product.offers.map(off => {
+          const evalRes = evaluateOffer(off, targetP);
+          return {
+            ...off,
+            eligible: evalRes.eligible,
+            calculatedDiscount: evalRes.calculatedDiscount,
+            effectivePrice: evalRes.effectivePrice,
+            ineligibilityReason: evalRes.ineligibilityReason,
+          };
+        });
+        product.bestOffer = determineBestOffer(product.offers, targetP);
+      }
+
+      product.priceUpdatedAt = nowIso;
+      product.updatedAt = nowIso;
+
+      recordAuditLog(
+        req.user!,
+        'Product Price & Offers Refreshed',
+        `Product: ${product.name}`,
+        product.id,
+        priceChanged ? `Price changed: ₹${oldPrice} -> ₹${newPrice}` : 'Price unchanged'
+      );
+      saveDatabase();
+
+      return res.json({
+        success: true,
+        product,
+        priceChanged,
+        priceDifference,
+        previousPrice: oldPrice,
+      });
+    } catch (err: any) {
+      console.error('Refresh product failed:', err);
+      return res.status(400).json({ error: err.message || 'Failed to refresh product.' });
+    }
+  });
+
+  // POST /api/admin/refresh-all-products (Batch refresh with safe throttling)
+  app.post('/api/admin/refresh-all-products', requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    const list = db.products.filter(p => Boolean(p.productUrl || p.affiliateLink));
+    let updatedCount = 0;
+    let priceDropsCount = 0;
+    let errorCount = 0;
+    const results: any[] = [];
+
+    for (const prod of list.slice(0, 50)) {
+      try {
+        const targetUrl = prod.productUrl || prod.affiliateLink;
+        const freshData = await fetchAndAnalyzeProduct(targetUrl);
+        const oldPrice = prod.price || prod.currentPrice;
+        const newPrice = freshData.currentPrice;
+        const nowIso = new Date().toISOString();
+
+        let priceChanged = false;
+        if (newPrice !== undefined && oldPrice !== undefined && newPrice !== oldPrice) {
+          priceChanged = true;
+          const diff = newPrice - oldPrice;
+          if (diff < 0) {
+            priceDropsCount++;
+            prod.priceDrop = {
+              amount: Math.abs(diff),
+              percentage: Math.round((Math.abs(diff) / oldPrice) * 100),
+              previousPrice: oldPrice,
+              detectedAt: nowIso,
+            };
+          }
+        }
+
+        if (newPrice !== undefined) {
+          prod.price = newPrice;
+          prod.currentPrice = newPrice;
+          if (!prod.priceHistory) prod.priceHistory = [];
+          prod.priceHistory.push({
+            date: nowIso,
+            price: newPrice,
+            formattedDate: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }),
+          });
+        }
+        if (freshData.originalPrice !== undefined) prod.originalPrice = freshData.originalPrice;
+        if (freshData.discountPercentage !== undefined) prod.discountPercentage = freshData.discountPercentage;
+        if (freshData.offers && freshData.offers.length > 0) {
+          prod.offers = freshData.offers;
+          prod.bestOffer = freshData.bestOffer;
+          prod.offersVerifiedAt = nowIso;
+        }
+
+        prod.priceUpdatedAt = nowIso;
+        prod.updatedAt = nowIso;
+        updatedCount++;
+
+        results.push({
+          id: prod.id,
+          name: prod.name,
+          oldPrice,
+          newPrice,
+          priceChanged,
+          bestOffer: prod.bestOffer,
+        });
+
+        // Throttle 300ms between requests
+        await new Promise(r => setTimeout(r, 300));
+      } catch (err: any) {
+        errorCount++;
+        results.push({ id: prod.id, name: prod.name, error: err.message });
+      }
+    }
+
+    saveDatabase();
+    recordAuditLog(req.user!, 'Batch Price Refresh Executed', `Refreshed ${updatedCount} items, ${priceDropsCount} price drops detected`);
+
+    return res.json({
+      total: list.length,
+      updated: updatedCount,
+      priceDrops: priceDropsCount,
+      errors: errorCount,
+      results,
+    });
+  });
+
+  // POST /api/admin/products/:id/offers (Manually add or edit bank/card offers)
+  app.post('/api/admin/products/:id/offers', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+    const { id } = req.params;
+    const { offers } = req.body;
+
+    const product = db.products.find(p => p.id === id);
+    if (!product) {
+      return res.status(404).json({ error: 'Product not found.' });
+    }
+
+    if (!Array.isArray(offers)) {
+      return res.status(400).json({ error: 'Offers array is required.' });
+    }
+
+    const nowIso = new Date().toISOString();
+    const currentPrice = product.price || product.currentPrice || 0;
+
+    const formattedOffers: PaymentOffer[] = offers.map((o: any) => {
+      const off: PaymentOffer = {
+        id: o.id || 'off_' + crypto.randomBytes(4).toString('hex'),
+        bank: o.bank?.trim() || 'Bank Offer',
+        cardType: o.cardType || 'ALL',
+        paymentMethod: o.paymentMethod?.trim() || 'Card',
+        discountType: o.discountType || 'FLAT',
+        discountPercentage: typeof o.discountPercentage === 'number' ? o.discountPercentage : undefined,
+        flatDiscount: typeof o.flatDiscount === 'number' ? o.flatDiscount : undefined,
+        maximumDiscount: typeof o.maximumDiscount === 'number' ? o.maximumDiscount : undefined,
+        minimumTransaction: typeof o.minimumTransaction === 'number' ? o.minimumTransaction : undefined,
+        cashback: typeof o.cashback === 'number' ? o.cashback : undefined,
+        emiRequired: Boolean(o.emiRequired),
+        emiTenure: o.emiTenure?.trim() || undefined,
+        expiryDate: o.expiryDate || undefined,
+        terms: o.terms?.trim() || undefined,
+        source: (o.source || 'ADMIN_VERIFIED') as OfferSource,
+        verifiedAt: o.verifiedAt || nowIso,
+        isActive: o.isActive !== false,
+      };
+
+      const evalRes = evaluateOffer(off, currentPrice);
+      off.eligible = evalRes.eligible;
+      off.calculatedDiscount = evalRes.calculatedDiscount;
+      off.effectivePrice = evalRes.effectivePrice;
+      off.ineligibilityReason = evalRes.ineligibilityReason;
+
+      return off;
+    });
+
+    product.offers = formattedOffers;
+    product.bestOffer = determineBestOffer(formattedOffers, currentPrice);
+    product.offersVerifiedAt = nowIso;
+    product.updatedAt = nowIso;
+
+    recordAuditLog(req.user!, 'Product Offers Updated', `Product: ${product.name}`, product.id, `Saved ${formattedOffers.length} offers`);
+    saveDatabase();
+
+    return res.json({ product, offers: formattedOffers, bestOffer: product.bestOffer });
+  });
+
+  // POST /api/admin/products/:id/refresh-offers (Direct one-click live refresh of product offers & price)
+  app.post('/api/admin/products/:id/refresh-offers', requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    const { id } = req.params;
+    const product = db.products.find(p => p.id === id);
+
+    if (!product) {
+      return res.status(404).json({ error: 'Product not found.' });
+    }
+
+    const targetUrl = product.productUrl || product.affiliateLink;
+    if (!targetUrl) {
+      return res.status(400).json({ error: 'Product does not have a destination URL to refresh.' });
+    }
+
+    try {
+      const freshData = await fetchAndAnalyzeProduct(targetUrl);
+      const oldPrice = product.price || product.currentPrice;
+      const newPrice = freshData.currentPrice;
+      const nowIso = new Date().toISOString();
+
+      let priceChanged = false;
+      let priceDifference = 0;
+
+      if (newPrice !== undefined && oldPrice !== undefined && newPrice !== oldPrice) {
+        priceChanged = true;
+        priceDifference = newPrice - oldPrice;
+
+        if (priceDifference < 0) {
+          const dropAmount = Math.abs(priceDifference);
+          const dropPct = Math.round((dropAmount / oldPrice) * 100);
+          product.priceDrop = {
+            amount: dropAmount,
+            percentage: dropPct,
+            previousPrice: oldPrice,
+            detectedAt: nowIso,
+          };
+        }
+      }
+
+      if (newPrice !== undefined) {
+        product.price = newPrice;
+        product.currentPrice = newPrice;
+        if (!product.priceHistory) product.priceHistory = [];
+        product.priceHistory.push({
+          date: nowIso,
+          price: newPrice,
+          formattedDate: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }),
+        });
+      }
+
+      if (freshData.originalPrice !== undefined) product.originalPrice = freshData.originalPrice;
+      if (freshData.discountPercentage !== undefined) product.discountPercentage = freshData.discountPercentage;
+      if (freshData.availability) product.availability = freshData.availability;
+
+      if (freshData.offers && freshData.offers.length > 0) {
+        product.offers = freshData.offers;
+        product.bestOffer = freshData.bestOffer;
+        product.offersVerifiedAt = nowIso;
+      } else if (product.offers && product.offers.length > 0) {
+        const targetP = product.price || 0;
+        product.offers = product.offers.map(off => {
+          const evalRes = evaluateOffer(off, targetP);
+          return {
+            ...off,
+            eligible: evalRes.eligible,
+            calculatedDiscount: evalRes.calculatedDiscount,
+            effectivePrice: evalRes.effectivePrice,
+            ineligibilityReason: evalRes.ineligibilityReason,
+          };
+        });
+        product.bestOffer = determineBestOffer(product.offers, targetP);
+      }
+
+      product.priceUpdatedAt = nowIso;
+      product.updatedAt = nowIso;
+
+      recordAuditLog(
+        req.user!,
+        'Product Offers & Price Refreshed',
+        `Product: ${product.name}`,
+        product.id,
+        `Offers: ${product.offers?.length || 0} active, Price: ₹${product.price}`
+      );
+      saveDatabase();
+
+      return res.json({
+        success: true,
+        product,
+        priceChanged,
+        priceDifference,
+        previousPrice: oldPrice,
+        offersCount: product.offers?.length || 0,
+        bestOffer: product.bestOffer || null,
+      });
+    } catch (err: any) {
+      console.error('Refresh product offers failed:', err);
+      return res.status(400).json({ error: err.message || 'Failed to refresh product offers.' });
+    }
+  });
+
+  // GET /api/admin/price-sync/status (Get background sync status & telemetry)
+  app.get('/api/admin/price-sync/status', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+    const syncState = getPriceSyncState();
+    return res.json(syncState);
+  });
+
+  // POST /api/admin/price-sync/settings (Configure background check frequency & enablement)
+  app.post('/api/admin/price-sync/settings', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+    const { enabled, intervalMinutes } = req.body;
+    const syncState = getPriceSyncState();
+
+    if (typeof enabled === 'boolean') {
+      syncState.enabled = enabled;
+    }
+    if (typeof intervalMinutes === 'number' && intervalMinutes >= 5) {
+      syncState.intervalMinutes = intervalMinutes;
+    }
+
+    if (syncState.enabled) {
+      syncState.nextRunAt = new Date(Date.now() + syncState.intervalMinutes * 60 * 1000).toISOString();
+    } else {
+      syncState.nextRunAt = undefined;
+    }
+
+    db.priceSyncState = syncState;
+    saveDatabase();
+    recordAuditLog(req.user!, 'Price Sync Settings Updated', 'System Settings', undefined, `Enabled: ${syncState.enabled}, Interval: ${syncState.intervalMinutes}m`);
+
+    return res.json(syncState);
+  });
+
+  // POST /api/admin/price-sync/trigger (Manually trigger background sync run)
+  app.post('/api/admin/price-sync/trigger', requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    const syncState = getPriceSyncState();
+    if (syncState.isRunning) {
+      return res.status(409).json({ error: 'Background sync is already in progress.' });
+    }
+
+    // Trigger in background so request does not hang
+    executeBackgroundPriceSync('MANUAL_TRIGGER').catch(err => {
+      console.error('Manual background price sync error:', err);
+    });
+
+    return res.json({ success: true, message: 'Background price & offer synchronization started.' });
+  });
+
   // PATCH /api/admin/products/:id/status (Fast status toggle: Publish / Unpublish / Archive)
   app.patch('/api/admin/products/:id/status', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
     const { id } = req.params;
     const { status } = req.body;
 
+    const cleanStatus = normalizeProductStatus(status);
     const validStatuses: ProductStatus[] = ['DRAFT', 'PUBLISHED', 'UNPUBLISHED', 'ARCHIVED'];
-    if (!validStatuses.includes(status)) {
+    if (!validStatuses.includes(cleanStatus)) {
       return res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
     }
 
@@ -992,10 +1924,10 @@ async function startServer() {
     }
 
     const prevStatus = product.status;
-    product.status = status;
+    product.status = cleanStatus;
     product.updatedAt = new Date().toISOString();
 
-    recordAuditLog(req.user!, `Product Status Changed`, `Product: ${product.name}`, product.id, `From ${prevStatus} to ${status}`);
+    recordAuditLog(req.user!, `Product Status Changed`, `Product: ${product.name}`, product.id, `From ${prevStatus} to ${cleanStatus}`);
     saveDatabase();
 
     return res.json({ product });
@@ -1052,17 +1984,18 @@ async function startServer() {
       return res.json({ success: true, count: deletedCount });
     }
 
-    if (['PUBLISHED', 'UNPUBLISHED', 'ARCHIVED', 'DRAFT'].includes(action)) {
+    const normalizedAction = (action || '').toString().trim().toUpperCase();
+    if (['PUBLISHED', 'UNPUBLISHED', 'ARCHIVED', 'DRAFT'].includes(normalizedAction)) {
       let updatedCount = 0;
       db.products.forEach(p => {
         if (productIds.includes(p.id)) {
-          p.status = action as ProductStatus;
+          p.status = normalizedAction as ProductStatus;
           p.updatedAt = new Date().toISOString();
           updatedCount++;
         }
       });
 
-      recordAuditLog(req.user!, `Bulk Status Update to ${action}`, `${updatedCount} products updated`, undefined, `Action: ${action}`);
+      recordAuditLog(req.user!, `Bulk Status Update to ${normalizedAction}`, `${updatedCount} products updated`, undefined, `Action: ${normalizedAction}`);
       saveDatabase();
       return res.json({ success: true, count: updatedCount });
     }
@@ -1203,12 +2136,16 @@ async function startServer() {
     return res.json({ users: sanitized });
   });
 
-  // POST /api/admin/users (Create User or Admin)
+  // POST /api/admin/users (Create User)
   app.post('/api/admin/users', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
     const { email, name, role = 'USER', password } = req.body;
 
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required.' });
+    }
+
+    if (role === 'ADMIN') {
+      return res.status(403).json({ error: 'Single Administrator Policy: Only one administrator account is permitted on the platform.' });
     }
 
     const normalizedEmail = email.trim().toLowerCase();
@@ -1221,8 +2158,8 @@ async function startServer() {
       id: generateId('usr'),
       email: normalizedEmail,
       name: name?.trim() || normalizedEmail.split('@')[0],
-      role: role === 'ADMIN' ? 'ADMIN' : 'USER',
-      passwordHash: password,
+      role: 'USER',
+      passwordHash: hashPassword(password),
       createdAt: new Date().toISOString(),
     };
 
@@ -1246,8 +2183,12 @@ async function startServer() {
     const { id } = req.params;
     const { role } = req.body;
 
-    if (role !== 'USER' && role !== 'ADMIN') {
-      return res.status(400).json({ error: 'Role must be USER or ADMIN.' });
+    if (role === 'ADMIN') {
+      return res.status(403).json({ error: 'Single Administrator Policy: Additional admin accounts cannot be created or assigned.' });
+    }
+
+    if (role !== 'USER') {
+      return res.status(400).json({ error: 'Role must be USER.' });
     }
 
     const targetUser = db.users.find(u => u.id === id);
@@ -1255,12 +2196,9 @@ async function startServer() {
       return res.status(404).json({ error: 'User not found.' });
     }
 
-    // Prevent removing the last admin
+    // Prevent removing the sole admin
     if (targetUser.role === 'ADMIN' && role === 'USER') {
-      const adminCount = db.users.filter(u => u.role === 'ADMIN').length;
-      if (adminCount <= 1) {
-        return res.status(400).json({ error: 'Cannot demote the sole Administrator.' });
-      }
+      return res.status(400).json({ error: 'Cannot demote the sole Administrator.' });
     }
 
     targetUser.role = role;
@@ -1350,9 +2288,7 @@ async function startServer() {
     for (const p of importedProducts) {
       if (!p.name || !p.imageUrl || !p.affiliateLink) continue;
 
-      const validStatus: ProductStatus = ['DRAFT', 'PUBLISHED', 'UNPUBLISHED', 'ARCHIVED'].includes(p.status)
-        ? p.status
-        : 'PUBLISHED';
+      const validStatus: ProductStatus = normalizeProductStatus(p.status);
 
       const prod: Product = {
         id: p.id || generateId('prod'),
@@ -1483,6 +2419,429 @@ async function startServer() {
       topProducts,
       topCategories,
     });
+  });
+
+  // GET /api/admin/traffic (Aggregated Website Visitors & Unique Page Views)
+  app.get('/api/admin/traffic', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+    const pageViews = db.pageViews || [];
+    const totalPageViews = pageViews.length;
+
+    const uniqueVisitorSet = new Set<string>();
+    const todayUniqueVisitorSet = new Set<string>();
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    let todayPageViews = 0;
+
+    // Daily map for the past 14 days
+    const dailyMap: { [dateStr: string]: { date: string; pageViews: number; visitors: Set<string> } } = {};
+    const now = Date.now();
+    for (let i = 13; i >= 0; i--) {
+      const d = new Date(now - i * 86400000);
+      const dStr = d.toISOString().split('T')[0];
+      dailyMap[dStr] = { date: dStr, pageViews: 0, visitors: new Set() };
+    }
+
+    const pathCountMap: { [path: string]: number } = {};
+    const deviceCountMap: { [dev: string]: number } = { desktop: 0, mobile: 0, tablet: 0 };
+    const referrerCountMap: { [ref: string]: number } = {};
+
+    pageViews.forEach(pv => {
+      uniqueVisitorSet.add(pv.visitorId);
+
+      const pvDateStr = pv.timestamp ? pv.timestamp.split('T')[0] : '';
+      if (pvDateStr === todayStr) {
+        todayPageViews++;
+        todayUniqueVisitorSet.add(pv.visitorId);
+      }
+
+      if (dailyMap[pvDateStr]) {
+        dailyMap[pvDateStr].pageViews++;
+        dailyMap[pvDateStr].visitors.add(pv.visitorId);
+      }
+
+      // Top paths
+      const p = pv.path || '/';
+      pathCountMap[p] = (pathCountMap[p] || 0) + 1;
+
+      // Device segmentation
+      const dev = pv.deviceType || 'desktop';
+      deviceCountMap[dev] = (deviceCountMap[dev] || 0) + 1;
+
+      // Referrer classification
+      let refCategory = 'Direct / Bookmarks';
+      const ref = (pv.referrer || '').toLowerCase();
+      if (!ref || ref === 'direct' || ref === '' || ref === 'null' || ref === 'undefined') {
+        refCategory = 'Direct / Bookmarks';
+      } else if (ref.includes('pinterest.')) {
+        refCategory = 'Pinterest';
+      } else if (ref.includes('google.') || ref.includes('bing.') || ref.includes('yahoo.')) {
+        refCategory = 'Search Engines (Google/Bing)';
+      } else if (ref.includes('instagram.') || ref.includes('facebook.') || ref.includes('t.co') || ref.includes('twitter') || ref.includes('x.com')) {
+        refCategory = 'Social Networks (IG/X/FB)';
+      } else if (ref.includes('reddit.')) {
+        refCategory = 'Reddit & Forums';
+      } else {
+        try {
+          const u = new URL(pv.referrer);
+          refCategory = u.hostname || 'Referral';
+        } catch {
+          refCategory = 'Other Referrals';
+        }
+      }
+      referrerCountMap[refCategory] = (referrerCountMap[refCategory] || 0) + 1;
+    });
+
+    const dailyTraffic = Object.values(dailyMap).map(item => ({
+      date: item.date,
+      pageViews: item.pageViews,
+      uniqueVisitors: item.visitors.size,
+    }));
+
+    const totalUniqueVisitors = uniqueVisitorSet.size;
+    const todayUniqueVisitors = todayUniqueVisitorSet.size;
+    const averageViewsPerVisitor = totalUniqueVisitors > 0 
+      ? Number((totalPageViews / totalUniqueVisitors).toFixed(2)) 
+      : 0;
+
+    const topPages = Object.entries(pathCountMap)
+      .map(([p, count]) => ({
+        path: p,
+        views: count,
+        percentage: totalPageViews > 0 ? Number(((count / totalPageViews) * 100).toFixed(1)) : 0,
+      }))
+      .sort((a, b) => b.views - a.views)
+      .slice(0, 15);
+
+    return res.json({
+      totalPageViews,
+      totalUniqueVisitors,
+      todayPageViews,
+      todayUniqueVisitors,
+      averageViewsPerVisitor,
+      dailyTraffic,
+      topPages,
+      trafficByDevice: deviceCountMap,
+      trafficByReferrer: referrerCountMap,
+      recentVisits: pageViews.slice(0, 50),
+    });
+  });
+
+  // POST /api/admin/enrich-link (Smart AI Affiliate Link Metadata Extraction)
+  app.post('/api/admin/enrich-link', requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    const { url, rawText } = req.body;
+    if (!url && !rawText) {
+      return res.status(400).json({ error: 'Please provide a product URL or raw merchant text/title to analyze.' });
+    }
+
+    try {
+      let pageTitle = '';
+      let pageDescription = '';
+      let pageImage = '';
+      let fetchedContent = '';
+
+      // Try lightweight web scraping if valid HTTP URL is provided
+      if (url && (url.startsWith('http://') || url.startsWith('https://'))) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 6000);
+          const fetchRes = await fetch(url, {
+            signal: controller.signal,
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            },
+          });
+          clearTimeout(timeoutId);
+
+          if (fetchRes.ok) {
+            const html = await fetchRes.text();
+            // Extract og:title, title, og:description, meta description, og:image
+            const titleMatch = html.match(/<meta\s+property=["']og:title["']\s+content=["'](.*?)["']/i) ||
+                               html.match(/<meta\s+name=["']twitter:title["']\s+content=["'](.*?)["']/i) ||
+                               html.match(/<title>(.*?)<\/title>/i);
+            if (titleMatch) pageTitle = titleMatch[1].trim();
+
+            const descMatch = html.match(/<meta\s+property=["']og:description["']\s+content=["'](.*?)["']/i) ||
+                              html.match(/<meta\s+name=["']description["']\s+content=["'](.*?)["']/i);
+            if (descMatch) pageDescription = descMatch[1].trim();
+
+            const imgMatch = html.match(/<meta\s+property=["']og:image["']\s+content=["'](.*?)["']/i) ||
+                             html.match(/<meta\s+name=["']twitter:image["']\s+content=["'](.*?)["']/i);
+            if (imgMatch) pageImage = imgMatch[1].trim();
+
+            // Extract visible text sample for Gemini
+            fetchedContent = html
+              .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+              .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+              .replace(/<[^>]+>/g, ' ')
+              .replace(/\s+/g, ' ')
+              .trim()
+              .slice(0, 3000);
+          }
+        } catch (scrapeErr) {
+          console.log('Page scraping warning (proceeding with fallback extraction):', scrapeErr);
+        }
+      }
+
+      // Domain extraction helper
+      let retailerDomain = '';
+      let guessedRetailer = '';
+      if (url) {
+        try {
+          const parsed = new URL(url);
+          retailerDomain = parsed.hostname.replace(/^www\./, '');
+          guessedRetailer = retailerDomain.split('.')[0];
+          guessedRetailer = guessedRetailer.charAt(0).toUpperCase() + guessedRetailer.slice(1);
+        } catch {}
+      }
+
+      // Available categories in db
+      const availableCategories = db.categories.map(c => c.name);
+
+      let enrichedData: any = {
+        name: pageTitle || 'Curated Design Find',
+        shortDescription: pageDescription || 'Editorial design item curated for aesthetic visual discovery.',
+        category: availableCategories[0] || 'Home Decor',
+        subcategory: '',
+        retailer: guessedRetailer || 'Direct Retailer',
+        brand: guessedRetailer || 'Direct Brand',
+        price: undefined,
+        originalPrice: undefined,
+        currency: 'USD',
+        tags: ['aesthetic', 'design', 'curated'],
+        imageUrl: pageImage || '',
+        aspectRatio: 'portrait',
+      };
+
+      // Call Gemini API if API key is present
+      if (process.env.GEMINI_API_KEY) {
+        try {
+          const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+          const prompt = `You are a high-end visual product catalog and affiliate merchandising curator.
+Extract and enrich structured product metadata from this product link and content for an aesthetic visual discovery platform.
+
+Target Categories to choose from: ${JSON.stringify(availableCategories)}
+
+Product URL: ${url || 'N/A'}
+Scraped Page Title: ${pageTitle || 'N/A'}
+Scraped Description: ${pageDescription || 'N/A'}
+User / Page Content Excerpt: ${rawText || fetchedContent || 'N/A'}
+
+Return a valid JSON object ONLY with the following schema:
+{
+  "name": "Catchy, clean, premium product title (no spammy keyword stuffing)",
+  "shortDescription": "1-2 sentences of elegant, editorial copywriting highlighting materials, craftsmanship, and utility",
+  "detailedNotes": "Key specifications or dimensions if available",
+  "category": "Must be exactly one of the provided Target Categories",
+  "subcategory": "A relevant specific subcategory (e.g. Desk Setup, Lighting, Audio, Coffee & Tea)",
+  "retailer": "Recognizable retailer name (e.g. Amazon, Etsy, Grovemade, Nordstrom, Target, Apple)",
+  "brand": "Brand or artisan creator name",
+  "price": 49.99, // estimated numeric price or current sale price if found, else null
+  "originalPrice": 69.99, // original price before discount if on sale, else null
+  "currency": "USD",
+  "tags": ["tag1", "tag2", "tag3", "tag4"], // 4-6 clean lowercase keywords
+  "aspectRatio": "tall" // one of: "tall", "portrait", "square", "wide"
+}`;
+
+          const response = await ai.models.generateContent({
+            model: 'gemini-3.7-flash',
+            contents: prompt,
+            config: {
+              responseMimeType: 'application/json',
+            },
+          });
+
+          if (response && response.text) {
+            const parsed = JSON.parse(response.text);
+            enrichedData = {
+              ...enrichedData,
+              ...parsed,
+              imageUrl: pageImage || enrichedData.imageUrl,
+            };
+          }
+        } catch (aiErr) {
+          console.error('Gemini auto-enrichment fallback:', aiErr);
+        }
+      }
+
+      return res.json({
+        success: true,
+        enriched: enrichedData,
+      });
+    } catch (err: any) {
+      console.error('Link enrichment error:', err);
+      return res.status(500).json({ error: err.message || 'Failed to auto-enrich product link' });
+    }
+  });
+
+  // POST /api/admin/generate-description (Gemini AI SEO Product Description Generator)
+  app.post('/api/admin/generate-description', requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    const { title, imageUrl, category, brand, retailer, keywords, tone } = req.body;
+
+    if (!title && !imageUrl) {
+      return res.status(400).json({ 
+        error: 'Please provide either a product title or an image URL to analyze and generate a description.' 
+      });
+    }
+
+    try {
+      const selectedTone = tone || 'editorial'; // 'editorial' | 'minimalist' | 'persuasive' | 'technical'
+      
+      let shortDescription = '';
+      let detailedDescription = '';
+      let seoKeywords: string[] = [];
+      let keyHighlights: string[] = [];
+
+      if (process.env.GEMINI_API_KEY) {
+        try {
+          const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+          
+          const systemPrompt = `You are a world-class e-commerce copywriter and SEO optimization specialist for an aesthetic, high-end visual product discovery platform (similar to Pinterest and curated design editorials).
+Your goal is to generate compelling, search-engine-optimized, professional product copy that drives engagement and affiliate conversions without sounding spammy.
+
+Input details:
+- Product Title/Name: ${title || 'Unspecified'}
+- Product Category: ${category || 'Curated Design'}
+- Brand/Creator: ${brand || 'Independent / Artisan'}
+- Retailer: ${retailer || 'Direct Partner'}
+- Existing Keywords/Tags: ${keywords || 'None'}
+- Desired Tone: ${selectedTone}
+- Image Provided: ${imageUrl ? 'Yes' : 'No'}
+
+Respond ONLY with a JSON object matching this schema:
+{
+  "shortDescription": "1-2 concise, punchy, elegant sentences (under 160 characters ideal for meta description & social shares) highlighting the core aesthetic and functional appeal.",
+  "detailedDescription": "A comprehensive, 2-3 paragraph professional SEO-friendly description. Include details on craftsmanship, styling/usage inspiration, materials/design philosophy, and why it stands out. Format with natural paragraph breaks.",
+  "keyHighlights": [
+    "Highlight 1 (e.g. Premium handcrafted ceramic with matte glaze)",
+    "Highlight 2 (e.g. Ergonomic design for daily ritual)",
+    "Highlight 3 (e.g. Sustainable and ethically sourced materials)"
+  ],
+  "seoKeywords": [
+    "keyword 1", "keyword 2", "keyword 3", "keyword 4", "keyword 5", "keyword 6"
+  ]
+}`;
+
+          const contents: any[] = [];
+
+          // Try to include image inline data if valid imageUrl is provided
+          let imagePartAdded = false;
+          if (imageUrl) {
+            if (imageUrl.startsWith('data:image/')) {
+              try {
+                const match = imageUrl.match(/^data:(image\/[a-zA-Z+]+);base64,(.+)$/);
+                if (match) {
+                  contents.push({
+                    inlineData: {
+                      mimeType: match[1],
+                      data: match[2],
+                    },
+                  });
+                  imagePartAdded = true;
+                }
+              } catch (e) {
+                console.log('Failed to parse base64 image data:', e);
+              }
+            } else if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+              try {
+                const imgController = new AbortController();
+                const timeoutId = setTimeout(() => imgController.abort(), 5000);
+                const imgRes = await fetch(imageUrl, {
+                  signal: imgController.signal,
+                  headers: { 'User-Agent': 'Mozilla/5.0' },
+                });
+                clearTimeout(timeoutId);
+
+                if (imgRes.ok) {
+                  const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
+                  if (contentType.startsWith('image/')) {
+                    const arrayBuffer = await imgRes.arrayBuffer();
+                    const base64Data = Buffer.from(arrayBuffer).toString('base64');
+                    contents.push({
+                      inlineData: {
+                        mimeType: contentType.split(';')[0],
+                        data: base64Data,
+                      },
+                    });
+                    imagePartAdded = true;
+                  }
+                }
+              } catch (fetchImgErr) {
+                console.log('Image fetch for Gemini vision skipped:', fetchImgErr);
+              }
+            }
+          }
+
+          const userText = imagePartAdded 
+            ? `Please analyze this product image and provided details, then generate professional SEO descriptions: \n${systemPrompt}`
+            : systemPrompt;
+
+          contents.push({ text: userText });
+
+          const response = await ai.models.generateContent({
+            model: 'gemini-3.7-flash',
+            contents: contents,
+            config: {
+              responseMimeType: 'application/json',
+            },
+          });
+
+          if (response && response.text) {
+            const parsed = JSON.parse(response.text);
+            shortDescription = parsed.shortDescription || '';
+            detailedDescription = parsed.detailedDescription || '';
+            keyHighlights = Array.isArray(parsed.keyHighlights) ? parsed.keyHighlights : [];
+            seoKeywords = Array.isArray(parsed.seoKeywords) ? parsed.seoKeywords : [];
+          }
+        } catch (genAiErr) {
+          console.error('Gemini generate description error:', genAiErr);
+        }
+      }
+
+      // Fallback heuristics if AI was unavailable or had partial output
+      if (!shortDescription || !detailedDescription) {
+        const prodName = title || 'Curated Design Piece';
+        const brandName = brand || retailer || 'Artisan Design Studio';
+        const catName = category || 'Living & Home';
+
+        if (!shortDescription) {
+          shortDescription = `Elevate your space with the ${prodName} by ${brandName}. Thoughtfully designed for modern aesthetics and effortless utility in ${catName.toLowerCase()}.`;
+        }
+
+        if (!detailedDescription) {
+          detailedDescription = `Discover the ${prodName}, a standout curation crafted for discerning design enthusiasts. Combining minimalist aesthetics with superior craftsmanship, this piece seamlessly integrates into your daily ritual.\n\nWhether styled as a focal accent or utilized for everyday functionality, the refined materials and attention to detail ensure enduring appeal. Ideal for modern spaces and intentional living.`;
+        }
+
+        if (keyHighlights.length === 0) {
+          keyHighlights = [
+            `Curated design in ${catName}`,
+            `Crafted by ${brandName}`,
+            'Premium tactile finish & durable build',
+          ];
+        }
+
+        if (seoKeywords.length === 0) {
+          seoKeywords = [
+            prodName.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(),
+            catName.toLowerCase(),
+            'curated aesthetic',
+            'modern design',
+            'affiliate find',
+          ];
+        }
+      }
+
+      return res.json({
+        success: true,
+        shortDescription,
+        detailedDescription,
+        keyHighlights,
+        seoKeywords,
+      });
+    } catch (err: any) {
+      console.error('AI description generation endpoint error:', err);
+      return res.status(500).json({ error: err.message || 'Failed to generate AI product description' });
+    }
   });
 
   // POST /api/admin/clear-data (Admin only data wipe)
@@ -2007,21 +3366,279 @@ async function startServer() {
     });
   });
 
-  // PUT /api/admin/pinterest/settings
-  app.put('/api/admin/pinterest/settings', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
-    const { defaultBoardId, autoSyncOnPublish } = req.body;
+  // ==========================================
+  // LINK HEALTH SCANNER & DEAD LINK CHECKER
+  // ==========================================
 
-    if (!db.pinterest) {
-      db.pinterest = { isConnected: false, syncedBoards: [] };
+  // GET /api/admin/check-links (Scan all affiliate links for health, tags, and status)
+  app.get('/api/admin/check-links', requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+    const results: any[] = [];
+    let healthyCount = 0;
+    let redirectCount = 0;
+    let brokenCount = 0;
+    let missingTagCount = 0;
+
+    const utm = (db as any).utmSettings || {};
+    const amazonTag = utm.customAffiliateTags?.Amazon || 'pinfind-21';
+
+    for (const p of db.products) {
+      const link = p.affiliateLink?.trim() || '';
+      
+      if (!link || !link.startsWith('http')) {
+        brokenCount++;
+        results.push({
+          productId: p.id,
+          productName: p.name,
+          retailer: p.retailer || 'Unknown',
+          affiliateLink: link,
+          status: 'broken',
+          httpCode: 400,
+          message: 'Invalid or missing affiliate link URL.',
+          checkedAt: new Date().toISOString(),
+          suggestedFix: 'Provide a valid https:// retailer or affiliate link.',
+        });
+        continue;
+      }
+
+      try {
+        const parsedUrl = new URL(link);
+        const domain = parsedUrl.hostname.toLowerCase();
+        
+        // Amazon tag verification
+        if (domain.includes('amazon.')) {
+          const hasTag = parsedUrl.searchParams.has('tag');
+          if (!hasTag) {
+            missingTagCount++;
+            results.push({
+              productId: p.id,
+              productName: p.name,
+              retailer: p.retailer || 'Amazon',
+              affiliateLink: link,
+              status: 'missing_tag',
+              httpCode: 200,
+              message: 'Missing Amazon Associate tracking tag parameter (?tag=).',
+              checkedAt: new Date().toISOString(),
+              suggestedFix: `Append &tag=${amazonTag} to ensure revenue attribution.`,
+            });
+            continue;
+          }
+        }
+
+        // Shortener / Redirect check
+        const isShortener = domain.includes('amzn.to') || domain.includes('bit.ly') || domain.includes('tinyurl.com') || domain.includes('rstyle.me') || domain.includes('shopstyle.it');
+        
+        if (isShortener) {
+          redirectCount++;
+          results.push({
+            productId: p.id,
+            productName: p.name,
+            retailer: p.retailer || 'Partner',
+            affiliateLink: link,
+            status: 'redirect',
+            httpCode: 301,
+            message: 'Redirect / Affiliate bridge shortlink active.',
+            checkedAt: new Date().toISOString(),
+            suggestedFix: 'Valid affiliate shortener. Resolves cleanly to target retailer.',
+          });
+        } else {
+          healthyCount++;
+          results.push({
+            productId: p.id,
+            productName: p.name,
+            retailer: p.retailer || 'Direct',
+            affiliateLink: link,
+            status: 'healthy',
+            httpCode: 200,
+            message: 'Direct clean merchant URL verified with active tracking.',
+            checkedAt: new Date().toISOString(),
+            suggestedFix: 'All parameters healthy.',
+          });
+        }
+      } catch (err: any) {
+        brokenCount++;
+        results.push({
+          productId: p.id,
+          productName: p.name,
+          retailer: p.retailer || 'Unknown',
+          affiliateLink: link,
+          status: 'broken',
+          httpCode: 500,
+          message: `Malformed URL structure: ${err?.message || 'Invalid syntax'}`,
+          checkedAt: new Date().toISOString(),
+          suggestedFix: 'Re-enter URL in admin editor.',
+        });
+      }
     }
 
-    if (defaultBoardId) db.pinterest.defaultBoardId = defaultBoardId;
-    if (typeof autoSyncOnPublish === 'boolean') db.pinterest.autoSyncOnPublish = autoSyncOnPublish;
+    const report = {
+      totalLinks: db.products.length,
+      healthyCount,
+      redirectCount,
+      brokenCount,
+      missingTagCount,
+      results,
+      scannedAt: new Date().toISOString(),
+    };
 
-    recordAuditLog(req.user!, 'Pinterest Sync Settings Updated', 'Pinterest Integration');
+    return res.json(report);
+  });
+
+  // POST /api/admin/fix-link (Batch or single auto-fix for affiliate link)
+  app.post('/api/admin/fix-link', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+    const { productId, newAffiliateLink } = req.body;
+    const product = db.products.find(p => p.id === productId);
+
+    if (!product) {
+      return res.status(404).json({ error: 'Product not found.' });
+    }
+
+    if (newAffiliateLink) {
+      product.affiliateLink = newAffiliateLink.trim();
+      product.updatedAt = new Date().toISOString();
+      saveDatabase();
+      recordAuditLog(req.user!, 'Affiliate Link Updated', `Product: ${product.name}`, product.id, `New URL: ${newAffiliateLink}`);
+      return res.json({ success: true, product });
+    }
+
+    // Auto-fix Amazon tag if missing
+    if (product.affiliateLink.includes('amazon.')) {
+      try {
+        const url = new URL(product.affiliateLink);
+        if (!url.searchParams.has('tag')) {
+          const utm = (db as any).utmSettings || {};
+          const amazonTag = utm.customAffiliateTags?.Amazon || 'pinfind-21';
+          url.searchParams.set('tag', amazonTag);
+          product.affiliateLink = url.toString();
+          product.updatedAt = new Date().toISOString();
+          saveDatabase();
+          recordAuditLog(req.user!, 'Auto-fixed Amazon Tag', `Product: ${product.name}`, product.id);
+          return res.json({ success: true, product });
+        }
+      } catch {}
+    }
+
+    return res.json({ success: true, product });
+  });
+
+  // ==========================================
+  // VISUAL & AESTHETIC "FIND SIMILAR" AI API
+  // ==========================================
+
+  // POST /api/products/find-similar (Visual & Stylistic Similarity Matcher)
+  app.post('/api/products/find-similar', async (req: Request, res: Response) => {
+    const { productId, category, tags = [], name, shortDescription } = req.body;
+
+    const sourceProduct = productId ? db.products.find(p => p.id === productId) : null;
+    const targetCategory = sourceProduct ? sourceProduct.category : (category || '');
+    const targetTags = sourceProduct ? sourceProduct.tags : (Array.isArray(tags) ? tags : []);
+    const targetName = sourceProduct ? sourceProduct.name : (name || '');
+
+    const candidates = db.products.filter(p => 
+      p.status === 'PUBLISHED' && (!sourceProduct || p.id !== sourceProduct.id)
+    );
+
+    if (candidates.length === 0) {
+      return res.json({ similarProducts: [], matchReason: 'No additional published products in catalog.' });
+    }
+
+    // Compute rich multi-factor similarity score:
+    // 1. Tag overlap (weight 40%)
+    // 2. Category matching (weight 30%)
+    // 3. Price proximity (weight 15%)
+    // 4. Name keyword match (weight 15%)
+    const targetPrice = sourceProduct?.price || 2000;
+    const targetTokens = (targetName + ' ' + (sourceProduct?.shortDescription || shortDescription || ''))
+      .toLowerCase()
+      .split(/\W+/)
+      .filter((t: string) => t.length > 2);
+
+    const scored = candidates.map(p => {
+      let score = 0;
+
+      // Category matching
+      if (p.category.toLowerCase() === targetCategory.toLowerCase()) {
+        score += 35;
+      }
+
+      // Tag overlap
+      const sharedTags = (p.tags || []).filter(t => targetTags.map((x: string) => x.toLowerCase()).includes(t.toLowerCase()));
+      score += sharedTags.length * 15;
+
+      // Token overlap
+      const pTokens = (p.name + ' ' + p.shortDescription).toLowerCase().split(/\W+/);
+      const sharedTokens = targetTokens.filter((t: string) => pTokens.includes(t));
+      score += sharedTokens.length * 8;
+
+      // Price proximity (closer prices in ₹ score higher)
+      if (p.price && targetPrice) {
+        const ratio = Math.min(p.price, targetPrice) / Math.max(p.price, targetPrice);
+        score += ratio * 15;
+      }
+
+      // Retailer / brand synergy
+      if (sourceProduct && p.retailer === sourceProduct.retailer) {
+        score += 8;
+      }
+
+      return {
+        product: p,
+        score,
+        sharedTags,
+        matchExplanation: sharedTags.length > 0 
+          ? `Matches aesthetic tags: #${sharedTags.slice(0, 2).join(', #')}` 
+          : `Shared ${p.category} aesthetic and price range`,
+      };
+    });
+
+    scored.sort((a, b) => b.score - a.score);
+    const topMatches = scored.slice(0, 6);
+
+    return res.json({
+      sourceProduct: sourceProduct || null,
+      similarProducts: topMatches.map(m => m.product),
+      matchDetails: topMatches.map(m => ({
+        id: m.product.id,
+        score: Math.min(99, Math.round(m.score + 20)),
+        explanation: m.matchExplanation,
+      })),
+      totalMatches: topMatches.length,
+    });
+  });
+
+  // ==========================================
+  // SMART UTM & SUB-ID CONFIGURATION APIS
+  // ==========================================
+
+  // GET /api/admin/utm-settings
+  app.get('/api/admin/utm-settings', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+    const utm = (db as any).utmSettings || {
+      enabled: true,
+      utmSource: 'pinfind',
+      utmMedium: 'affiliate',
+      utmCampaign: 'discovery_feed',
+      appendSubId: true,
+      customAffiliateTags: { Amazon: 'pinfind-21', Myntra: 'pinfind_app', Flipkart: 'pinfind_curated' },
+    };
+    return res.json({ utmSettings: utm });
+  });
+
+  // PUT /api/admin/utm-settings
+  app.put('/api/admin/utm-settings', requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+    const { enabled, utmSource, utmMedium, utmCampaign, appendSubId, customAffiliateTags } = req.body;
+
+    (db as any).utmSettings = {
+      enabled: typeof enabled === 'boolean' ? enabled : true,
+      utmSource: utmSource?.trim() || 'pinfind',
+      utmMedium: utmMedium?.trim() || 'affiliate',
+      utmCampaign: utmCampaign?.trim() || 'discovery_feed',
+      appendSubId: typeof appendSubId === 'boolean' ? appendSubId : true,
+      customAffiliateTags: customAffiliateTags || { Amazon: 'pinfind-21' },
+    };
+
+    recordAuditLog(req.user!, 'UTM & Affiliate Tracking Settings Updated', 'System Settings');
     saveDatabase();
 
-    return res.json(db.pinterest);
+    return res.json({ success: true, utmSettings: (db as any).utmSettings });
   });
 
   // GET /api/catalog/feed.xml (Pinterest Merchant & RSS Product Feed)

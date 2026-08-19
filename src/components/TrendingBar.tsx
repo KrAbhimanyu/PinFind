@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Product, FilterState, SortOption, PriceFilter } from '../types';
 import { CATEGORIES, RETAILERS } from '../data/initialProducts';
+import { formatPrice } from '../utils/formatters';
 import { 
   TrendingUp, Flame, SlidersHorizontal, ArrowUpDown, X, 
   Tag as TagIcon, Sparkles, DollarSign, Calendar, ChevronDown, 
-  Check, ArrowDownAZ, ArrowUpAZ, Zap
+  Check, ArrowDownAZ, ArrowUpAZ, Zap, Percent, ShoppingBag
 } from 'lucide-react';
 
 interface TrendingBarProps {
@@ -118,6 +119,15 @@ export const TrendingBar: React.FC<TrendingBarProps> = ({
 
   const currentSortItem = SORT_OPTIONS.find(s => s.id === filterState.sortBy) || SORT_OPTIONS[0];
 
+  const availableCategories = React.useMemo(() => {
+    const set = new Set<string>(['All Pins']);
+    CATEGORIES.forEach(c => set.add(c));
+    products.forEach(p => {
+      if (p.category && p.category.trim()) set.add(p.category.trim());
+    });
+    return Array.from(set);
+  }, [products]);
+
   return (
     <div id="discovery-controls-section" className="space-y-4 mb-6">
       {/* Trending Picks Carousel Strip */}
@@ -153,7 +163,7 @@ export const TrendingBar: React.FC<TrendingBarProps> = ({
                     {prod.name}
                   </h4>
                   <div className="flex items-center gap-1.5 text-[11px]">
-                    <span className="font-bold text-rose-600">{prod.currency || '$'}{prod.price}</span>
+                    <span className="font-bold text-rose-600">{formatPrice(prod.price, prod.currency)}</span>
                     <span className="text-slate-300">•</span>
                     <span className="text-slate-500">{prod.retailer}</span>
                   </div>
@@ -167,8 +177,8 @@ export const TrendingBar: React.FC<TrendingBarProps> = ({
       {/* Main Categories Navigation Pills */}
       <div className="flex items-center justify-between gap-3 overflow-x-auto pb-1 pt-1 scrollbar-none">
         <div className="flex items-center gap-2 flex-nowrap min-w-max">
-          {CATEGORIES.map((cat) => {
-            const isActive = filterState.category === cat;
+          {availableCategories.map((cat) => {
+            const isActive = filterState.category?.toLowerCase() === cat.toLowerCase();
             const style = CATEGORY_COLOR_STYLES[cat] || {
               active: 'bg-slate-900 text-white shadow-sm',
               inactive: 'bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200/60'
@@ -262,6 +272,19 @@ export const TrendingBar: React.FC<TrendingBarProps> = ({
 
           <div className="flex items-center gap-1.5">
             <button
+              onClick={() => onUpdateFilter({ onlyOnSale: !filterState.onlyOnSale })}
+              className={`px-3 py-1.5 rounded-xl border text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer ${
+                filterState.onlyOnSale
+                  ? 'bg-rose-600 border-rose-600 text-white font-bold shadow-xs'
+                  : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+              }`}
+              title="Filter by items with active price drops and discounts"
+            >
+              <Percent className={`w-3.5 h-3.5 ${filterState.onlyOnSale ? 'text-white' : 'text-rose-600'}`} />
+              <span>Deals & Sales</span>
+            </button>
+
+            <button
               onClick={() => onUpdateFilter({ onlySpikes: !filterState.onlySpikes })}
               className={`px-3 py-1.5 rounded-xl border text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer ${
                 filterState.onlySpikes
@@ -311,10 +334,10 @@ export const TrendingBar: React.FC<TrendingBarProps> = ({
               className="text-xs font-semibold text-slate-700 bg-transparent focus:outline-none cursor-pointer"
             >
               <option value="all">Any Price</option>
-              <option value="under25">Under $25</option>
-              <option value="25to50">$25 to $50</option>
-              <option value="50to100">$50 to $100</option>
-              <option value="over100">$100+</option>
+              <option value="under999">Under ₹1,000</option>
+              <option value="1000to2500">₹1,000 to ₹2,500</option>
+              <option value="2500to5000">₹2,500 to ₹5,000</option>
+              <option value="over5000">Over ₹5,000</option>
             </select>
           </div>
 
